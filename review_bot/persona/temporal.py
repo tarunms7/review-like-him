@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def weight_comment(comment_date: datetime) -> float:
@@ -11,10 +11,10 @@ def weight_comment(comment_date: datetime) -> float:
 
     Last 3 months: 3.0x, 3-12 months: 1.5x, 12+ months: 0.5x.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     if comment_date.tzinfo is None:
-        comment_date = comment_date.replace(tzinfo=timezone.utc)
+        comment_date = comment_date.replace(tzinfo=UTC)
 
     age_days = (now - comment_date).days
 
