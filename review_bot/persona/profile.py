@@ -10,7 +10,9 @@ class Priority(BaseModel):
     """A single review priority with category, severity level, and description."""
 
     category: str = Field(description="Priority category slug (e.g. 'error_handling', 'naming')")
-    severity: str = Field(description="Severity level: 'critical', 'strict', 'moderate', 'opinionated'")
+    severity: str = Field(
+        description="Severity level: 'critical', 'strict', 'moderate', 'opinionated'",
+    )
     description: str = Field(description="Human-readable description of the priority")
 
 
@@ -38,7 +40,9 @@ class PersonaProfile(BaseModel):
     github_user: str = Field(description="GitHub username the persona was mined from")
     mined_from: str = Field(default="", description="Human-readable mining summary")
     last_updated: str = Field(default="", description="ISO 8601 date string of last mining run")
-    priorities: list[Priority] = Field(default_factory=list, description="Ordered review priorities")
+    priorities: list[Priority] = Field(
+        default_factory=list, description="Ordered review priorities",
+    )
     pet_peeves: list[str] = Field(default_factory=list, description="Things the reviewer dislikes")
     tone: str = Field(default="", description="Description of reviewer's communication style")
     severity_pattern: SeverityPattern = Field(

@@ -133,7 +133,12 @@ class GitHubReviewMiner:
 
         # Fetch PR reviews (for verdicts like APPROVE, REQUEST_CHANGES)
         prs_url = f"{GITHUB_API}/repos/{repo_full_name}/pulls"
-        prs = await self._paginate(prs_url, {"state": "all", "sort": "updated", "direction": "desc"})
+        prs_params = {
+            "state": "all",
+            "sort": "updated",
+            "direction": "desc",
+        }
+        prs = await self._paginate(prs_url, prs_params)
 
         for pr in prs:
             pr_number = pr.get("number")
