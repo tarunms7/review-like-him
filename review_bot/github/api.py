@@ -53,6 +53,7 @@ class GitHubAPIClient:
         *,
         headers: dict[str, str] | None = None,
         json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> httpx.Response:
         """Make an HTTP request with exponential backoff on rate limits and errors."""
         backoff = INITIAL_BACKOFF
@@ -60,7 +61,9 @@ class GitHubAPIClient:
 
         for attempt in range(MAX_RETRIES):
             try:
-                resp = await self._client.request(method, url, headers=headers, json=json)
+                resp = await self._client.request(
+                    method, url, headers=headers, json=json, params=params
+                )
 
                 # Handle rate limiting
                 if resp.status_code == 403 and "rate limit" in resp.text.lower():
@@ -197,11 +200,9 @@ class GitHubAPIClient:
             "GET",
             f"{GITHUB_API_BASE}/users/{username}/events",
             headers={"Accept": "application/vnd.github+json"},
+            params={"page": page, "per_page": per_page},
         )
-        events = resp.json()
-        return [e for e in events if e.get("type") == "PullRequestReviewEvent"][
-            (page - 1) * per_page : page * per_page
-        ]
+        return [e for e in resp.json() if e.get("type") == "PullRequestReviewEvent"]
 
     async def get_repo_contents(self, owner: str, repo: str, path: str) -> dict:
         """Get file contents from a repository."""
