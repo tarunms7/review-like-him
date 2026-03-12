@@ -301,7 +301,10 @@ def persona_edit(name: str) -> None:
         click.echo(click.style(f"Persona '{name}' not found.", fg="red"))
         raise SystemExit(1)
 
-    filepath = store._path_for(name)
+    from pathlib import Path
+
+    personas_dir = Path.home() / ".review-bot" / "personas"
+    filepath = personas_dir / f"{name}.yaml"
     editor = os.environ.get("EDITOR", "vi")
 
     click.echo(f"Opening {filepath} in {editor}...")

@@ -88,12 +88,32 @@ def _start_daemon(host: str, port: int) -> None:
 @server.command("status")
 def server_status() -> None:
     """Show server status and recent review activity."""
+    import socket
+
     from review_bot.persona.store import PersonaStore
+
+    settings = Settings()
+
+    # Check running state by probing the server port
+    running = False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1)
+            result = sock.connect_ex(("127.0.0.1", settings.port))
+            running = result == 0
+    except OSError:
+        running = False
+
+    click.echo(click.style("\n═══ review-bot Status ═══\n", fg="cyan", bold=True))
+
+    if running:
+        click.echo(click.style(f"  Server: running on port {settings.port}", fg="green"))
+    else:
+        click.echo(click.style(f"  Server: not running (port {settings.port})", fg="red"))
 
     # Check personas
     store = PersonaStore()
     personas = store.list_all()
-    click.echo(click.style("\n═══ review-bot Status ═══\n", fg="cyan", bold=True))
     click.echo(f"  Active personas: {len(personas)}")
     for p in personas:
         click.echo(f"    - {p.name} ({p.github_user})")
