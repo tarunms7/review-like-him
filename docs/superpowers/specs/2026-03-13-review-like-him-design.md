@@ -16,7 +16,7 @@ When a key reviewer (e.g., a tech lead or senior engineer) is unavailable — on
 
 Build a CLI tool + GitHub App that:
 1. Mines a reviewer's past PR review history across repos to learn their style
-2. Creates a bot GitHub account that can be assigned as a PR reviewer
+2. Uses the GitHub App identity to post reviews (persona name `deepam` maps to bot display as `deepam-bot` in review comments — no separate GitHub account needed per persona)
 3. Uses Claude Code SDK (login-based, no API keys) to review code through that person's lens
 4. Posts rich, categorized reviews with inline comments in the person's voice
 5. Adapts to each repo's conventions (no demanding tests in repos without test infrastructure)
@@ -249,6 +249,40 @@ The bot submits one of:
 - **Request changes** — if blocking issues are found (per the persona's `blocks_on` list)
 - **Comment** — if only nits/suggestions, no blockers
 
+## Bot Identity on GitHub
+
+The GitHub App itself posts all reviews. There is no separate GitHub account per persona. Instead:
+
+- The GitHub App is named something like "ReviewLikeHim" or the org's chosen name
+- Each review comment clearly identifies the persona: the review body starts with a header like **"Reviewing as deepam-bot 🤖"**
+- The persona name convention: persona named `deepam` is referenced as `deepam-bot` in all user-facing contexts
+- Assignment trigger: a comment `/review-as deepam` on the PR, or a label `review:deepam`, triggers the review (since GitHub App bots can't be "assigned" as reviewers in the traditional sense — they respond to webhook events)
+- Multiple personas: `/review-as deepam priya` or labels `review:deepam` + `review:priya` trigger independent parallel reviews
+
+## Large PR Handling
+
+For PRs exceeding Claude's context window:
+- Prioritize files by relevance to the persona's known priorities (e.g., if the persona cares about error handling, review error-heavy files first)
+- Split into multiple review passes if needed — one pass per logical file group
+- Each pass produces its own review comments; they accumulate on the PR
+- If a PR is extremely large (500+ files), post a summary comment: "This PR is very large. Reviewing the most critical files based on [persona]'s priorities."
+
+## Re-review Behavior
+
+When a developer pushes fixes and re-triggers a review:
+- The bot performs a full re-review of the current diff (not incremental)
+- This is simpler and ensures nothing is missed after changes
+- Previous bot review comments remain on the PR for history (GitHub handles this naturally)
+- The new review supersedes the old verdict (approve/request changes)
+
+## Storage Schema
+
+SQLite database at `~/.review-bot/review-bot.db` with tables:
+
+- **reviews**: id, persona_name, repo, pr_number, pr_url, verdict (approve/request_changes/comment), comment_count, created_at, duration_ms
+- **jobs**: id, review_id, status (queued/running/completed/failed), queued_at, started_at, completed_at, error_message
+- **persona_stats**: persona_name, total_reviews, repos_mined, comments_mined, last_mined_at, last_review_at
+
 ## Project Structure
 
 ```
@@ -346,6 +380,8 @@ ruff
 - **Persona not found for bot username:** Post a comment on the PR: "No persona configured for this bot. Run `review-bot persona create`"
 - **Claude Code SDK fails:** Retry once. If still fails, post comment: "Review failed — LLM unavailable. Will retry automatically."
 - **GitHub API rate limit:** Queue the review, retry with exponential backoff
+- **GitHub API rate limit during mining:** Respect rate limits, use conditional requests (ETags), paginate with delays. Show progress bar during long mining operations
+- **Claude CLI session expired:** Detect auth failure before review, log clear message: "Claude session expired. Run `claude login` to re-authenticate." Skip review gracefully, don't crash the server
 - **Repo clone fails:** Post comment with error details, skip review
 - **Invalid PR data:** Log warning, skip gracefully
 
