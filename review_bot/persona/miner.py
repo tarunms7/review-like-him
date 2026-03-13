@@ -116,19 +116,27 @@ class GitHubReviewMiner:
 
         return results
 
-    async def _fetch_user_repos(
+    async def _discover_reviewed_prs(
         self,
         username: str,
         progress_callback: ProgressCallback = None,
-    ) -> list[dict]:
-        """Fetch repos a user has contributed to via their events."""
+    ) -> dict[str, list[int]]:
+        """Discover repos and specific PR numbers the user has reviewed.
+
+        Uses the GitHub Search API to find PRs reviewed by the user,
+        then groups PR numbers by repo. This avoids fetching all PRs
+        in a repo and only targets the ones the user actually reviewed.
+
+        Returns:
+            Dict mapping repo full_name to list of PR numbers reviewed.
+        """
         if progress_callback:
             progress_callback(MiningProgress(
                 phase="discovering_repos",
                 detail="Searching for reviewed PRs...",
             ))
 
-        # Search for PRs the user has reviewed
+        # Paginate through all search results
         search_url = f"{GITHUB_API}/search/issues"
         params = {
             "q": f"type:pr reviewed-by:{username}",
@@ -136,104 +144,67 @@ class GitHubReviewMiner:
             "order": "desc",
             "per_page": PER_PAGE,
         }
-        response = await self._request(search_url, params)
-        response.raise_for_status()
-        data = response.json()
 
-        # Extract unique repos from search results
-        repos: dict[str, dict] = {}
-        for item in data.get("items", []):
-            repo_url = item.get("repository_url", "")
-            if repo_url and repo_url not in repos:
-                # Extract owner/repo from URL
-                parts = repo_url.rstrip("/").split("/")
-                if len(parts) >= 2:
-                    full_name = f"{parts[-2]}/{parts[-1]}"
-                    repos[repo_url] = {"full_name": full_name, "url": repo_url}
+        repos_to_prs: dict[str, list[int]] = {}
+        page = 1
 
-        repo_list = list(repos.values())
+        while True:
+            params["page"] = page
+            response = await self._request(search_url, params)
+            response.raise_for_status()
+            data = response.json()
+
+            items = data.get("items", [])
+            if not items:
+                break
+
+            for item in items:
+                repo_url = item.get("repository_url", "")
+                pr_number = item.get("number")
+                if repo_url and pr_number:
+                    parts = repo_url.rstrip("/").split("/")
+                    if len(parts) >= 2:
+                        full_name = f"{parts[-2]}/{parts[-1]}"
+                        if full_name not in repos_to_prs:
+                            repos_to_prs[full_name] = []
+                        if pr_number not in repos_to_prs[full_name]:
+                            repos_to_prs[full_name].append(pr_number)
+
+            # GitHub Search API caps at 1000 results total
+            total_count = data.get("total_count", 0)
+            if page * PER_PAGE >= min(total_count, 1000):
+                break
+            page += 1
 
         if progress_callback:
+            total_prs = sum(len(prs) for prs in repos_to_prs.values())
             progress_callback(MiningProgress(
                 phase="discovering_repos",
-                detail=f"Found {len(repo_list)} repos with reviews",
-                repo_total=len(repo_list),
+                detail=f"Found {total_prs} reviewed PRs across {len(repos_to_prs)} repos",
+                repo_total=len(repos_to_prs),
             ))
 
-        return repo_list
+        return repos_to_prs
 
     async def _fetch_reviews_for_repo(
         self,
         repo_full_name: str,
         username: str,
+        pr_numbers: list[int],
         repo_index: int | None = None,
         repo_total: int | None = None,
         items_found: int = 0,
         progress_callback: ProgressCallback = None,
     ) -> list[dict]:
-        """Fetch all review comments and verdicts by a user in a given repo."""
+        """Fetch review comments and verdicts by a user for specific PRs.
+
+        Only fetches data for the PR numbers the user actually reviewed,
+        instead of scanning all PRs in the repo.
+        """
         results: list[dict] = []
+        pr_total = len(pr_numbers)
 
-        # -- Fetch pull request review comments by the user --
-        comments_url = f"{GITHUB_API}/repos/{repo_full_name}/pulls/comments"
-
-        def _on_comments_page(page: int, page_data: list[dict]) -> None:
-            if progress_callback:
-                progress_callback(MiningProgress(
-                    phase="fetching_comments",
-                    repo=repo_full_name,
-                    repo_index=repo_index,
-                    repo_total=repo_total,
-                    detail=f"Fetching page {page} of review comments",
-                    items_found=items_found + len(results),
-                    page=page,
-                ))
-
-        all_comments = await self._paginate(
-            comments_url,
-            {"sort": "updated", "direction": "desc"},
-            on_page=_on_comments_page,
-        )
-
-        for comment in all_comments:
-            user = comment.get("user", {})
-            if user and user.get("login", "").lower() == username.lower():
-                results.append({
-                    "repo": repo_full_name,
-                    "pr_number": comment.get("pull_request_url", "").rstrip("/").split("/")[-1],
-                    "comment_body": comment.get("body", ""),
-                    "verdict": None,  # Comments don't carry verdicts
-                    "created_at": comment.get("created_at", ""),
-                    "file_path": comment.get("path", ""),
-                    "line": comment.get("original_line") or comment.get("line"),
-                })
-
-        # -- Fetch PR reviews (for verdicts like APPROVE, REQUEST_CHANGES) --
-        prs_url = f"{GITHUB_API}/repos/{repo_full_name}/pulls"
-        prs_params = {
-            "state": "all",
-            "sort": "updated",
-            "direction": "desc",
-        }
-
-        def _on_prs_page(page: int, page_data: list[dict]) -> None:
-            if progress_callback:
-                progress_callback(MiningProgress(
-                    phase="fetching_prs",
-                    repo=repo_full_name,
-                    repo_index=repo_index,
-                    repo_total=repo_total,
-                    detail=f"Fetching page {page} of pull requests",
-                    items_found=items_found + len(results),
-                    page=page,
-                ))
-
-        prs = await self._paginate(prs_url, prs_params, on_page=_on_prs_page)
-
-        pr_total = len(prs)
-        for pr_idx, pr in enumerate(prs):
-            pr_number = pr.get("number")
-
+        for pr_idx, pr_number in enumerate(pr_numbers):
             if progress_callback:
                 progress_callback(MiningProgress(
                     phase="fetching_pr_reviews",
@@ -247,7 +218,29 @@ class GitHubReviewMiner:
                     pr_total=pr_total,
                 ))
 
-            reviews_url = f"{GITHUB_API}/repos/{repo_full_name}/pulls/{pr_number}/reviews"
+            # Fetch inline review comments for this PR
+            comments_url = (
+                f"{GITHUB_API}/repos/{repo_full_name}/pulls/{pr_number}/comments"
+            )
+            comments = await self._paginate(comments_url)
+
+            for comment in comments:
+                user = comment.get("user", {})
+                if user and user.get("login", "").lower() == username.lower():
+                    results.append({
+                        "repo": repo_full_name,
+                        "pr_number": pr_number,
+                        "comment_body": comment.get("body", ""),
+                        "verdict": None,
+                        "created_at": comment.get("created_at", ""),
+                        "file_path": comment.get("path", ""),
+                        "line": comment.get("original_line") or comment.get("line"),
+                    })
+
+            # Fetch review verdicts (APPROVE, REQUEST_CHANGES, etc.)
+            reviews_url = (
+                f"{GITHUB_API}/repos/{repo_full_name}/pulls/{pr_number}/reviews"
+            )
             reviews = await self._paginate(reviews_url)
 
             for review in reviews:
@@ -287,19 +280,24 @@ class GitHubReviewMiner:
         """
         logger.info("Discovering repos with reviews from %s", username)
 
-        repos = await self._fetch_user_repos(username, progress_callback)
-        total = len(repos)
-        logger.info("Found %d repos with reviews from %s", total, username)
+        repos_to_prs = await self._discover_reviewed_prs(username, progress_callback)
+        total = len(repos_to_prs)
+        total_prs = sum(len(prs) for prs in repos_to_prs.values())
+        logger.info(
+            "Found %d reviewed PRs across %d repos for %s", total_prs, total, username
+        )
 
         all_reviews: list[dict] = []
-        for idx, repo_info in enumerate(repos):
-            repo_name = repo_info["full_name"]
-
-            logger.info("Mining reviews from %s (%d/%d)", repo_name, idx + 1, total)
+        for idx, (repo_name, pr_numbers) in enumerate(repos_to_prs.items()):
+            logger.info(
+                "Mining %d reviewed PRs from %s (%d/%d)",
+                len(pr_numbers), repo_name, idx + 1, total,
+            )
             try:
                 reviews = await self._fetch_reviews_for_repo(
                     repo_name,
                     username,
+                    pr_numbers=pr_numbers,
                     repo_index=idx + 1,
                     repo_total=total,
                     items_found=len(all_reviews),
