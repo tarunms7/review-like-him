@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # setup.sh — Single-command setup for review-like-him
-# Usage: curl -sSL ... | bash  OR  bash setup.sh
+# Usage: curl -sSL ... | bash  OR  bash setup.sh [--no-init]
 # Works on macOS and Linux.
+#
+# Options:
+#   --no-init    Skip the interactive review-bot init wizard
 #
 # Windows users: Use WSL or run these steps manually:
 #   1. Install Python 3.11+ from https://python.org
@@ -23,6 +26,7 @@ BOLD='\033[1m'
 RESET='\033[0m'
 
 step=0
+SKIP_INIT=false
 
 info()  { echo -e "${BLUE}ℹ ${RESET} $*"; }
 ok()    { echo -e "${GREEN}✓ ${RESET} $*"; }
@@ -33,6 +37,23 @@ step() {
     step=$((step + 1))
     echo ""
     echo -e "${BOLD}${CYAN}[$step]${RESET} ${BOLD}$*${RESET}"
+}
+
+# ─── Parse arguments ─────────────────────────────────────────────────────────
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-init)
+                SKIP_INIT=true
+                shift
+                ;;
+            *)
+                warn "Unknown option: $1"
+                shift
+                ;;
+        esac
+    done
 }
 
 # ─── Detect OS ───────────────────────────────────────────────────────────────
@@ -141,7 +162,10 @@ setup_venv() {
 
         # shellcheck disable=SC1091
         source "$venv_dir/bin/activate"
-        uv pip install -e ".[dev]" 2>&1 | tail -1
+        info "Installing package with uv (this may take a moment)..."
+        if ! uv pip install -e ".[dev]"; then
+            fail "uv pip install failed. Check the output above for details."
+        fi
         ok "Installed review-like-him in editable mode (with dev deps)"
     else
         if [ ! -d "$venv_dir" ]; then
@@ -153,9 +177,23 @@ setup_venv() {
 
         # shellcheck disable=SC1091
         source "$venv_dir/bin/activate"
-        "$INSTALLER" install -e ".[dev]" 2>&1 | tail -1
+
+        info "Upgrading pip..."
+        "$INSTALLER" install --upgrade pip || warn "pip upgrade failed (continuing anyway)"
+
+        info "Installing package with $INSTALLER (this may take a moment)..."
+        if ! "$INSTALLER" install -e ".[dev]"; then
+            fail "$INSTALLER install failed. Check the output above for details."
+        fi
         ok "Installed review-like-him in editable mode (with dev deps)"
     fi
+
+    # Verify the package can be imported
+    info "Verifying package installation..."
+    if ! "$PYTHON" -c 'import review_bot' 2>/dev/null; then
+        fail "Installation verification failed: 'import review_bot' did not succeed."
+    fi
+    ok "Package verification passed (import review_bot)"
 
     # Verify the CLI is available
     if command -v review-bot &>/dev/null; then
@@ -195,6 +233,20 @@ check_claude_cli() {
 
 run_init() {
     step "Running review-bot init"
+
+    # Skip if --no-init flag was passed
+    if [ "$SKIP_INIT" = true ]; then
+        info "Skipping init (--no-init flag set)."
+        echo "    Run manually later: review-bot init"
+        return
+    fi
+
+    # Skip if stdin is not a TTY (e.g., piped install: curl ... | bash)
+    if [ ! -t 0 ]; then
+        warn "Skipping init — stdin is not a terminal (non-interactive mode detected)."
+        echo "    Run manually later: review-bot init"
+        return
+    fi
 
     if command -v review-bot &>/dev/null; then
         info "Starting interactive setup wizard..."
@@ -239,6 +291,8 @@ print_summary() {
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 main() {
+    parse_args "$@"
+
     echo ""
     echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════${RESET}"
     echo -e "${BOLD}${CYAN}  review-like-him — Automated Setup${RESET}"
