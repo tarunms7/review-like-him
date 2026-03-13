@@ -6,7 +6,7 @@ import json
 import logging
 from datetime import date
 
-from claude_code_sdk import ClaudeCodeOptions, Message, query
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 
 from review_bot.persona.profile import PersonaProfile, Priority, SeverityPattern
 
@@ -75,13 +75,13 @@ class PersonaAnalyzer:
 
         logger.info("Sending %d review summaries to Claude for analysis", len(summaries))
 
-        # Call Claude Code SDK
+        # Call Claude Agent SDK
         result_text = ""
         async for message in query(
             prompt=prompt,
-            options=ClaudeCodeOptions(max_turns=1),
+            options=ClaudeAgentOptions(max_turns=1),
         ):
-            if isinstance(message, Message):
+            if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if hasattr(block, "text"):
                         result_text += block.text

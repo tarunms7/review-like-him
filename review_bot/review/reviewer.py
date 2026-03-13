@@ -1,16 +1,16 @@
-"""Claude Code SDK wrapper for executing review prompts."""
+"""Claude Agent SDK wrapper for executing review prompts."""
 
 from __future__ import annotations
 
 import logging
 
-from claude_code_sdk import ClaudeCodeOptions, Message, query
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 
 logger = logging.getLogger("review-bot")
 
 
 class ClaudeReviewer:
-    """Executes review prompts via Claude Code SDK with retry logic."""
+    """Executes review prompts via Claude Agent SDK with retry logic."""
 
     def __init__(self, max_retries: int = 1) -> None:
         self._max_retries = max_retries
@@ -52,13 +52,13 @@ class ClaudeReviewer:
         raise RuntimeError(f"Review failed after {self._max_retries + 1} attempts: {last_error}")
 
     async def _execute(self, prompt: str) -> str:
-        """Execute a single prompt via Claude Code SDK."""
+        """Execute a single prompt via Claude Agent SDK."""
         result_text = ""
         async for message in query(
             prompt=prompt,
-            options=ClaudeCodeOptions(max_turns=1),
+            options=ClaudeAgentOptions(max_turns=1),
         ):
-            if isinstance(message, Message):
+            if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if hasattr(block, "text"):
                         result_text += block.text
