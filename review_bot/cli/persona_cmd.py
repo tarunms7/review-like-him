@@ -56,8 +56,13 @@ def persona_create(name: str, github_user: str) -> None:
         from review_bot.persona.miner import GitHubReviewMiner
         from review_bot.persona.temporal import apply_weights
 
+        headers = {"Accept": "application/vnd.github+json"}
+        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if gh_token:
+            headers["Authorization"] = f"Bearer {gh_token}"
+
         async with httpx.AsyncClient(
-            headers={"Accept": "application/vnd.github+json"},
+            headers=headers,
             timeout=30.0,
         ) as client:
             miner = GitHubReviewMiner(client)
@@ -237,8 +242,13 @@ def persona_update(name: str) -> None:
         from review_bot.persona.miner import GitHubReviewMiner
         from review_bot.persona.temporal import apply_weights
 
+        headers = {"Accept": "application/vnd.github+json"}
+        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if gh_token:
+            headers["Authorization"] = f"Bearer {gh_token}"
+
         async with httpx.AsyncClient(
-            headers={"Accept": "application/vnd.github+json"},
+            headers=headers,
             timeout=30.0,
         ) as client:
             miner = GitHubReviewMiner(client)
