@@ -47,23 +47,22 @@ def _create_mining_progress_handler() -> callable:
     def _flush_phase_summary(phase: str, progress: MiningProgress) -> None:
         """Print summary line when transitioning away from a pagination phase."""
         if phase == "fetching_comments" and state["comment_pages"]:
-            pages_str = ", ".join(str(p) for p in state["comment_pages"])
+            total_pages = len(state["comment_pages"])
             click.echo(
-                f"\r  Fetching review comments... (page {pages_str}) "
+                f"\r\033[K  Fetching review comments... ({total_pages} pages) "
                 f"found {progress.items_found} comments"
             )
             state["comment_pages"] = []
         elif phase == "fetching_prs" and state["pr_pages"]:
-            pages_str = ", ".join(str(p) for p in state["pr_pages"])
+            total_pages = len(state["pr_pages"])
             click.echo(
-                f"\r  Fetching pull requests... (page {pages_str}) "
+                f"\r\033[K  Fetching pull requests... ({total_pages} pages) "
                 f"found {progress.items_found} PRs"
             )
             state["pr_pages"] = []
         elif phase == "fetching_pr_reviews" and state["last_pr_reviews_count"] > 0:
             click.echo(
-                f"\r  \u2713 Found {progress.items_found} matching reviews"
-                + " " * 40
+                f"\r\033[K  \u2713 Found {progress.items_found} matching reviews"
             )
             state["last_pr_reviews_count"] = 0
 
@@ -96,17 +95,19 @@ def _create_mining_progress_handler() -> callable:
         elif progress.phase == "fetching_comments":
             if progress.page is not None:
                 state["comment_pages"].append(progress.page)
-            pages_str = ", ".join(str(p) for p in state["comment_pages"])
-            msg = f"  Fetching review comments... (page {pages_str})"
+            current_page = state["comment_pages"][-1] if state["comment_pages"] else "?"
+            items = progress.items_found or 0
+            msg = f"  Fetching review comments... (page {current_page}, {items} items found)"
             sys.stderr.flush()
-            click.echo(f"\r{msg}", nl=False)
+            click.echo(f"\r\033[K{msg}", nl=False)
 
         elif progress.phase == "fetching_prs":
             if progress.page is not None:
                 state["pr_pages"].append(progress.page)
-            pages_str = ", ".join(str(p) for p in state["pr_pages"])
-            msg = f"  Fetching pull requests... (page {pages_str})"
-            click.echo(f"\r{msg}", nl=False)
+            current_page = state["pr_pages"][-1] if state["pr_pages"] else "?"
+            items = progress.items_found or 0
+            msg = f"  Fetching pull requests... (page {current_page}, {items} items found)"
+            click.echo(f"\r\033[K{msg}", nl=False)
 
         elif progress.phase == "fetching_pr_reviews":
             state["last_pr_reviews_count"] = (progress.pr_index or 0)
@@ -122,7 +123,7 @@ def _create_mining_progress_handler() -> callable:
                 )
             else:
                 msg = f"  Scanning PR reviews...  PR #{pr_num}"
-            click.echo(f"\r{msg}" + " " * 10, nl=False)
+            click.echo(f"\r\033[K{msg}", nl=False)
 
         elif progress.phase == "done":
             repo_total = progress.repo_total or 0
