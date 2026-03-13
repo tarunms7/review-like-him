@@ -274,7 +274,8 @@ def persona_show(name: str) -> None:
         click.echo(click.style(f"Persona '{name}' not found.", fg="red"))
         raise SystemExit(1)
 
-    click.echo(click.style(f"\n\u2550\u2550\u2550 Persona: {profile.name} \u2550\u2550\u2550\n", fg="cyan", bold=True))
+    header = f"\n\u2550\u2550\u2550 Persona: {profile.name} \u2550\u2550\u2550\n"
+    click.echo(click.style(header, fg="cyan", bold=True))
     click.echo(f"  GitHub User:  {profile.github_user}")
     click.echo(f"  Mined From:   {profile.mined_from}")
     click.echo(f"  Last Updated: {profile.last_updated}")
