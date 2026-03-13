@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -15,6 +16,26 @@ logger = logging.getLogger(__name__)
 GITHUB_API = "https://api.github.com"
 PER_PAGE = 100
 RATE_LIMIT_BUFFER = 5  # seconds buffer when sleeping for rate limits
+
+
+@dataclasses.dataclass
+class MiningProgress:
+    """Granular progress event emitted during review mining."""
+
+    phase: str = "discovering_repos"
+    repo: str | None = None
+    repo_index: int | None = None
+    repo_total: int | None = None
+    detail: str = ""
+    items_found: int = 0
+    page: int | None = None
+    pr_number: int | None = None
+    pr_index: int | None = None
+    pr_total: int | None = None
+
+
+# Type alias for the progress callback
+ProgressCallback = Callable[[MiningProgress], None] | None
 
 
 class GitHubReviewMiner:
@@ -50,8 +71,21 @@ class GitHubReviewMiner:
 
         return response
 
-    async def _paginate(self, url: str, params: dict[str, Any] | None = None) -> list[dict]:
-        """Fetch all pages from a paginated GitHub API endpoint."""
+    async def _paginate(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        on_page: Callable[[int, list[dict]], None] | None = None,
+    ) -> list[dict]:
+        """Fetch all pages from a paginated GitHub API endpoint.
+
+        Args:
+            url: GitHub API endpoint URL.
+            params: Query parameters for the request.
+            on_page: Optional callback called with (page_number, page_data) after
+                each successful page fetch. The caller uses this to construct and
+                emit MiningProgress events with the appropriate phase.
+        """
         params = dict(params or {})
         params.setdefault("per_page", PER_PAGE)
         page = 1
@@ -71,6 +105,9 @@ class GitHubReviewMiner:
 
             results.extend(data)
 
+            if on_page is not None:
+                on_page(page, data)
+
             # Check for next page via Link header
             link = response.headers.get("Link", "")
             if 'rel="next"' not in link:
@@ -79,8 +116,18 @@ class GitHubReviewMiner:
 
         return results
 
-    async def _fetch_user_repos(self, username: str) -> list[dict]:
+    async def _fetch_user_repos(
+        self,
+        username: str,
+        progress_callback: ProgressCallback = None,
+    ) -> list[dict]:
         """Fetch repos a user has contributed to via their events."""
+        if progress_callback:
+            progress_callback(MiningProgress(
+                phase="discovering_repos",
+                detail="Searching for reviewed PRs...",
+            ))
+
         # Search for PRs the user has reviewed
         search_url = f"{GITHUB_API}/search/issues"
         params = {
@@ -104,19 +151,49 @@ class GitHubReviewMiner:
                     full_name = f"{parts[-2]}/{parts[-1]}"
                     repos[repo_url] = {"full_name": full_name, "url": repo_url}
 
-        return list(repos.values())
+        repo_list = list(repos.values())
+
+        if progress_callback:
+            progress_callback(MiningProgress(
+                phase="discovering_repos",
+                detail=f"Found {len(repo_list)} repos with reviews",
+                repo_total=len(repo_list),
+            ))
+
+        return repo_list
 
     async def _fetch_reviews_for_repo(
         self,
         repo_full_name: str,
         username: str,
+        repo_index: int | None = None,
+        repo_total: int | None = None,
+        items_found: int = 0,
+        progress_callback: ProgressCallback = None,
     ) -> list[dict]:
         """Fetch all review comments and verdicts by a user in a given repo."""
         results: list[dict] = []
 
-        # Fetch pull request review comments by the user
+        # -- Fetch pull request review comments by the user --
         comments_url = f"{GITHUB_API}/repos/{repo_full_name}/pulls/comments"
-        all_comments = await self._paginate(comments_url, {"sort": "updated", "direction": "desc"})
+
+        def _on_comments_page(page: int, page_data: list[dict]) -> None:
+            if progress_callback:
+                progress_callback(MiningProgress(
+                    phase="fetching_comments",
+                    repo=repo_full_name,
+                    repo_index=repo_index,
+                    repo_total=repo_total,
+                    detail=f"Fetching page {page} of review comments",
+                    items_found=items_found + len(results),
+                    page=page,
+                ))
+
+        all_comments = await self._paginate(
+            comments_url,
+            {"sort": "updated", "direction": "desc"},
+            on_page=_on_comments_page,
+        )
 
         for comment in all_comments:
             user = comment.get("user", {})
@@ -131,17 +208,45 @@ class GitHubReviewMiner:
                     "line": comment.get("original_line") or comment.get("line"),
                 })
 
-        # Fetch PR reviews (for verdicts like APPROVE, REQUEST_CHANGES)
+        # -- Fetch PR reviews (for verdicts like APPROVE, REQUEST_CHANGES) --
         prs_url = f"{GITHUB_API}/repos/{repo_full_name}/pulls"
         prs_params = {
             "state": "all",
             "sort": "updated",
             "direction": "desc",
         }
-        prs = await self._paginate(prs_url, prs_params)
 
-        for pr in prs:
+        def _on_prs_page(page: int, page_data: list[dict]) -> None:
+            if progress_callback:
+                progress_callback(MiningProgress(
+                    phase="fetching_prs",
+                    repo=repo_full_name,
+                    repo_index=repo_index,
+                    repo_total=repo_total,
+                    detail=f"Fetching page {page} of pull requests",
+                    items_found=items_found + len(results),
+                    page=page,
+                ))
+
+        prs = await self._paginate(prs_url, prs_params, on_page=_on_prs_page)
+
+        pr_total = len(prs)
+        for pr_idx, pr in enumerate(prs):
             pr_number = pr.get("number")
+
+            if progress_callback:
+                progress_callback(MiningProgress(
+                    phase="fetching_pr_reviews",
+                    repo=repo_full_name,
+                    repo_index=repo_index,
+                    repo_total=repo_total,
+                    detail=f"Fetching reviews for PR #{pr_number} ({pr_idx + 1}/{pr_total})",
+                    items_found=items_found + len(results),
+                    pr_number=pr_number,
+                    pr_index=pr_idx + 1,
+                    pr_total=pr_total,
+                ))
+
             reviews_url = f"{GITHUB_API}/repos/{repo_full_name}/pulls/{pr_number}/reviews"
             reviews = await self._paginate(reviews_url)
 
@@ -166,13 +271,15 @@ class GitHubReviewMiner:
     async def mine_user_reviews(
         self,
         username: str,
-        progress_callback: Callable[[str, int, int], None] | None = None,
+        progress_callback: Callable[[MiningProgress], None] | None = None,
     ) -> list[dict]:
         """Mine all accessible review data for a GitHub user.
 
         Args:
             username: GitHub username to mine reviews for.
-            progress_callback: Optional callback(repo_name, current, total) for progress.
+            progress_callback: Optional callback invoked with a MiningProgress
+                dataclass on every progress event. Defaults to None. When None,
+                behavior is unchanged from before (no progress reporting).
 
         Returns:
             List of review comment dicts with repo, pr_number, comment_body,
@@ -180,19 +287,24 @@ class GitHubReviewMiner:
         """
         logger.info("Discovering repos with reviews from %s", username)
 
-        repos = await self._fetch_user_repos(username)
+        repos = await self._fetch_user_repos(username, progress_callback)
         total = len(repos)
         logger.info("Found %d repos with reviews from %s", total, username)
 
         all_reviews: list[dict] = []
         for idx, repo_info in enumerate(repos):
             repo_name = repo_info["full_name"]
-            if progress_callback:
-                progress_callback(repo_name, idx + 1, total)
 
             logger.info("Mining reviews from %s (%d/%d)", repo_name, idx + 1, total)
             try:
-                reviews = await self._fetch_reviews_for_repo(repo_name, username)
+                reviews = await self._fetch_reviews_for_repo(
+                    repo_name,
+                    username,
+                    repo_index=idx + 1,
+                    repo_total=total,
+                    items_found=len(all_reviews),
+                    progress_callback=progress_callback,
+                )
                 all_reviews.extend(reviews)
             except httpx.HTTPStatusError as exc:
                 logger.warning(
@@ -200,6 +312,14 @@ class GitHubReviewMiner:
                     repo_name,
                     exc.response.status_code,
                 )
+
+        if progress_callback:
+            progress_callback(MiningProgress(
+                phase="done",
+                detail=f"Done: {len(all_reviews)} review comments across {total} repos",
+                items_found=len(all_reviews),
+                repo_total=total,
+            ))
 
         logger.info("Mined %d total review comments for %s", len(all_reviews), username)
         return all_reviews
