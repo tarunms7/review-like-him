@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import click
 import httpx
@@ -56,8 +57,13 @@ def review_cmd(pr_url: str, persona_name: str) -> None:
         from review_bot.github.api import GitHubAPIClient
         from review_bot.review.orchestrator import ReviewOrchestrator
 
+        headers = {"Accept": "application/vnd.github+json"}
+        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if gh_token:
+            headers["Authorization"] = f"Bearer {gh_token}"
+
         async with httpx.AsyncClient(
-            headers={"Accept": "application/vnd.github+json"},
+            headers=headers,
             timeout=30.0,
         ) as client:
             github_client = GitHubAPIClient(client)
