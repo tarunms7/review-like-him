@@ -17,3 +17,4 @@ web/.next/
 .env.production
 .DS_Store
 .superpowers/
+/bs
