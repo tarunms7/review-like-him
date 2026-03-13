@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
 
 import click
 import httpx
@@ -25,6 +26,140 @@ def _run_async(coro):
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, coro).result()
     return asyncio.run(coro)
+
+
+def _create_mining_progress_handler() -> callable:
+    """Create a closure that handles MiningProgress events with rich CLI output.
+
+    Returns a callback function matching Callable[[MiningProgress], None].
+    """
+    from review_bot.persona.miner import MiningProgress
+
+    # Mutable state tracked across calls
+    state = {
+        "current_repo": None,
+        "current_phase": None,
+        "comment_pages": [],
+        "pr_pages": [],
+        "last_pr_reviews_count": 0,
+    }
+
+    def _flush_phase_summary(phase: str, progress: MiningProgress) -> None:
+        """Print summary line when transitioning away from a pagination phase."""
+        if phase == "fetching_comments" and state["comment_pages"]:
+            pages_str = ", ".join(str(p) for p in state["comment_pages"])
+            click.echo(
+                f"\r  Fetching review comments... (page {pages_str}) "
+                f"found {progress.items_found} comments"
+            )
+            state["comment_pages"] = []
+        elif phase == "fetching_prs" and state["pr_pages"]:
+            pages_str = ", ".join(str(p) for p in state["pr_pages"])
+            click.echo(
+                f"\r  Fetching pull requests... (page {pages_str}) "
+                f"found {progress.items_found} PRs"
+            )
+            state["pr_pages"] = []
+        elif phase == "fetching_pr_reviews" and state["last_pr_reviews_count"] > 0:
+            click.echo(
+                f"\r  \u2713 Found {progress.items_found} matching reviews"
+                + " " * 40
+            )
+            state["last_pr_reviews_count"] = 0
+
+    def handler(progress: MiningProgress) -> None:
+        prev_phase = state["current_phase"]
+
+        # Flush summary of previous phase when transitioning
+        if prev_phase and prev_phase != progress.phase:
+            _flush_phase_summary(prev_phase, progress)
+
+        state["current_phase"] = progress.phase
+
+        # -- Repo header: print once per new repo --
+        if progress.repo and progress.repo != state["current_repo"]:
+            state["current_repo"] = progress.repo
+            idx = progress.repo_index or "?"
+            total = progress.repo_total or "?"
+            click.echo(
+                f"\n\U0001f4e6 [{idx}/{total}] "
+                + click.style(progress.repo, bold=True)
+            )
+
+        # -- Phase-specific rendering --
+        if progress.phase == "discovering_repos":
+            if progress.repo_total is not None:
+                click.echo(f"  Found {progress.repo_total} repos with reviews")
+            else:
+                click.echo("\u23f3 Discovering repos with reviews...")
+
+        elif progress.phase == "fetching_comments":
+            if progress.page is not None:
+                state["comment_pages"].append(progress.page)
+            pages_str = ", ".join(str(p) for p in state["comment_pages"])
+            msg = f"  Fetching review comments... (page {pages_str})"
+            sys.stderr.flush()
+            click.echo(f"\r{msg}", nl=False)
+
+        elif progress.phase == "fetching_prs":
+            if progress.page is not None:
+                state["pr_pages"].append(progress.page)
+            pages_str = ", ".join(str(p) for p in state["pr_pages"])
+            msg = f"  Fetching pull requests... (page {pages_str})"
+            click.echo(f"\r{msg}", nl=False)
+
+        elif progress.phase == "fetching_pr_reviews":
+            state["last_pr_reviews_count"] = (progress.pr_index or 0)
+            pr_idx = progress.pr_index or 0
+            pr_total = progress.pr_total or 0
+            pr_num = progress.pr_number or "?"
+            if pr_total > 0:
+                filled = int(pr_idx / pr_total * 8)
+                bar = "#" * filled + "-" * (8 - filled)
+                msg = (
+                    f"  Scanning PR reviews... [{bar}] "
+                    f"{pr_idx}/{pr_total}  PR #{pr_num}"
+                )
+            else:
+                msg = f"  Scanning PR reviews...  PR #{pr_num}"
+            click.echo(f"\r{msg}" + " " * 10, nl=False)
+
+        elif progress.phase == "done":
+            repo_total = progress.repo_total or 0
+            click.echo(
+                f"\n\u2705 Found {progress.items_found} review comments "
+                f"across {repo_total} repos"
+            )
+
+    return handler
+
+
+async def _run_mining(github_user: str) -> list[dict]:
+    """Shared helper: mine reviews for a GitHub user with rich progress display.
+
+    Sets up the HTTP client, creates the miner, attaches the progress handler,
+    and returns the list of mined review dicts.
+    """
+    from review_bot.persona.miner import GitHubReviewMiner
+
+    headers = {"Accept": "application/vnd.github+json"}
+    gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if gh_token:
+        headers["Authorization"] = f"Bearer {gh_token}"
+
+    progress_handler = _create_mining_progress_handler()
+
+    async with httpx.AsyncClient(
+        headers=headers,
+        timeout=30.0,
+    ) as client:
+        miner = GitHubReviewMiner(client)
+        reviews = await miner.mine_user_reviews(
+            github_user,
+            progress_callback=progress_handler,
+        )
+
+    return reviews
 
 
 @click.group()
@@ -53,44 +188,9 @@ def persona_create(name: str, github_user: str) -> None:
 
     async def _create() -> None:
         from review_bot.persona.analyzer import PersonaAnalyzer
-        from review_bot.persona.miner import GitHubReviewMiner
         from review_bot.persona.temporal import apply_weights
 
-        headers = {"Accept": "application/vnd.github+json"}
-        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        if gh_token:
-            headers["Authorization"] = f"Bearer {gh_token}"
-
-        async with httpx.AsyncClient(
-            headers=headers,
-            timeout=30.0,
-        ) as client:
-            miner = GitHubReviewMiner(client)
-
-            # Progress tracking
-            with click.progressbar(
-                length=100,
-                label="Mining repos",
-                show_pos=True,
-            ) as bar:
-                current_total = [0]
-
-                def progress_cb(repo_name: str, current: int, total: int) -> None:
-                    if current_total[0] != total:
-                        bar.length = total
-                        current_total[0] = total
-                    bar.update(1)
-                    bar.label = f"Mining {repo_name}"
-
-                reviews = await miner.mine_user_reviews(
-                    github_user,
-                    progress_callback=progress_cb,
-                )
-
-                # Ensure bar completes
-                remaining = bar.length - bar.pos
-                if remaining > 0:
-                    bar.update(remaining)
+        reviews = await _run_mining(github_user)
 
         if not reviews:
             click.echo(click.style("No reviews found for this user.", fg="red"))
@@ -120,7 +220,7 @@ def persona_create(name: str, github_user: str) -> None:
 
         # Save
         store.save(profile)
-        click.echo(click.style(f"✓ Persona '{name}' saved.", fg="green", bold=True))
+        click.echo(click.style(f"\u2713 Persona '{name}' saved.", fg="green", bold=True))
 
     try:
         _run_async(_create())
@@ -142,7 +242,7 @@ def persona_list() -> None:
     # Table header
     header = f"{'Name':<15} {'GitHub User':<20} {'Comments':<15} {'Repos':<8} {'Updated':<12}"
     click.echo(click.style(header, bold=True))
-    click.echo("─" * len(header))
+    click.echo("\u2500" * len(header))
 
     for p in profiles:
         # Parse mined_from for stats
@@ -174,7 +274,7 @@ def persona_show(name: str) -> None:
         click.echo(click.style(f"Persona '{name}' not found.", fg="red"))
         raise SystemExit(1)
 
-    click.echo(click.style(f"\n═══ Persona: {profile.name} ═══\n", fg="cyan", bold=True))
+    click.echo(click.style(f"\n\u2550\u2550\u2550 Persona: {profile.name} \u2550\u2550\u2550\n", fg="cyan", bold=True))
     click.echo(f"  GitHub User:  {profile.github_user}")
     click.echo(f"  Mined From:   {profile.mined_from}")
     click.echo(f"  Last Updated: {profile.last_updated}")
@@ -239,42 +339,9 @@ def persona_update(name: str) -> None:
 
     async def _update() -> None:
         from review_bot.persona.analyzer import PersonaAnalyzer
-        from review_bot.persona.miner import GitHubReviewMiner
         from review_bot.persona.temporal import apply_weights
 
-        headers = {"Accept": "application/vnd.github+json"}
-        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        if gh_token:
-            headers["Authorization"] = f"Bearer {gh_token}"
-
-        async with httpx.AsyncClient(
-            headers=headers,
-            timeout=30.0,
-        ) as client:
-            miner = GitHubReviewMiner(client)
-
-            with click.progressbar(
-                length=100,
-                label="Mining repos",
-                show_pos=True,
-            ) as bar:
-                current_total = [0]
-
-                def progress_cb(repo_name: str, current: int, total: int) -> None:
-                    if current_total[0] != total:
-                        bar.length = total
-                        current_total[0] = total
-                    bar.update(1)
-                    bar.label = f"Mining {repo_name}"
-
-                reviews = await miner.mine_user_reviews(
-                    existing.github_user,
-                    progress_callback=progress_cb,
-                )
-
-                remaining = bar.length - bar.pos
-                if remaining > 0:
-                    bar.update(remaining)
+        reviews = await _run_mining(existing.github_user)
 
         if not reviews:
             click.echo(click.style("No reviews found.", fg="red"))
@@ -292,7 +359,7 @@ def persona_update(name: str) -> None:
         profile.overrides = existing.overrides
 
         store.save(profile)
-        click.echo(click.style(f"✓ Persona '{name}' updated.", fg="green", bold=True))
+        click.echo(click.style(f"\u2713 Persona '{name}' updated.", fg="green", bold=True))
 
     try:
         _run_async(_update())
@@ -336,6 +403,6 @@ def persona_edit(name: str) -> None:
     # Validate the edited file
     try:
         store.load(name)
-        click.echo(click.style(f"✓ Persona '{name}' validated.", fg="green"))
+        click.echo(click.style(f"\u2713 Persona '{name}' validated.", fg="green"))
     except Exception as exc:
         click.echo(click.style(f"Warning: YAML validation failed: {exc}", fg="yellow"))
