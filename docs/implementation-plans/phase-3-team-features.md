@@ -775,7 +775,7 @@ async def _run_comparison(
     match = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
     if not match:
         click.echo(f"Error: Invalid PR URL: {pr_url}", err=True)
-        return
+        sys.exit(1)
 
     owner, repo, pr_number = match.group(1), match.group(2), int(match.group(3))
 
