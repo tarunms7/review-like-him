@@ -160,7 +160,8 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import async_engine_from_config, create_async_engine
 
 from review_bot.config.settings import Settings
 from review_bot.models import Base
@@ -185,28 +186,51 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def do_run_migrations(connection):
-    """Run migrations using the provided connection."""
+def do_run_migrations(connection) -> None:
+    """Run migrations using the provided synchronous connection."""
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
         context.run_migrations()
 
 
 async def run_migrations_online() -> None:
-    """Run migrations in 'online' mode — connect to the database."""
-    settings = Settings()
-    engine = create_async_engine(settings.db_url)
+    """Run migrations in 'online' mode — connect to the database.
 
-    async with engine.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+    Supports two modes:
+    1. Called from app lifespan via config.attributes["connection"] — uses the
+       existing connection (already inside an event loop, no new engine needed).
+    2. Called from CLI (alembic upgrade head) — creates its own async engine.
+    """
+    connectable = config.attributes.get("connection", None)
 
-    await engine.dispose()
+    if connectable is not None:
+        # Running from within the app — connection was passed in by app.py.
+        # This is already a synchronous connection (from run_sync), so use directly.
+        do_run_migrations(connectable)
+    else:
+        # Running from CLI — create our own async engine.
+        settings = Settings()
+        connectable = create_async_engine(settings.db_url, poolclass=pool.NullPool)
+
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+
+        await connectable.dispose()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    asyncio.run(run_migrations_online())
+    # When called from app.py via run_sync, we are already in a sync context
+    # (run_sync provides a synchronous connection). When called from CLI,
+    # asyncio.run() is safe because there is no existing event loop.
+    connectable = config.attributes.get("connection", None)
+    if connectable is not None:
+        # Called via run_sync from app.py — already have a sync connection.
+        do_run_migrations(connectable)
+    else:
+        # Called from CLI — safe to use asyncio.run().
+        asyncio.run(run_migrations_online())
 ```
 
 #### New: `alembic/versions/001_initial_schema.py`
@@ -296,14 +320,22 @@ from alembic.config import Config
 from alembic import command
 
 async def _run_migrations(engine: AsyncEngine) -> None:
-    """Run Alembic migrations to head."""
+    """Run Alembic migrations to head.
+
+    Passes the synchronous connection to env.py via config.attributes so
+    that env.py reuses our connection instead of creating its own engine.
+    This avoids SQLite 'database is locked' errors and the RuntimeError
+    from calling asyncio.run() inside an already-running event loop.
+    """
     alembic_cfg = Config("alembic.ini")
-    alembic_cfg.attributes["engine"] = engine
+
+    def _do_upgrade(sync_conn) -> None:
+        alembic_cfg.attributes["connection"] = sync_conn
+        command.upgrade(alembic_cfg, "head")
 
     async with engine.begin() as conn:
-        await conn.run_sync(
-            lambda sync_conn: command.upgrade(alembic_cfg, "head")
-        )
+        await conn.run_sync(_do_upgrade)
+
     logger.info("Database migrations applied")
 
 # In lifespan(), replace:
@@ -342,27 +374,38 @@ review-bot db stamp
 
 **Auto-detection in server startup:**
 ```python
+from sqlalchemy import inspect as sa_inspect
+
 async def _run_migrations(engine: AsyncEngine) -> None:
-    """Run migrations, auto-stamping existing databases."""
+    """Run migrations, auto-stamping existing databases.
+
+    Uses SQLAlchemy's inspect() for cross-database table detection
+    (works with both SQLite and PostgreSQL). All Alembic commands
+    are called inside run_sync to avoid asyncio.run() conflicts.
+    """
+    alembic_cfg = Config("alembic.ini")
+
+    def _do_migrate(sync_conn) -> None:
+        alembic_cfg.attributes["connection"] = sync_conn
+
+        # Use SQLAlchemy inspector for cross-database table detection
+        inspector = sa_inspect(sync_conn)
+        existing_tables = inspector.get_table_names()
+        has_alembic = "alembic_version" in existing_tables
+        has_tables = "reviews" in existing_tables
+
+        if has_tables and not has_alembic:
+            # Existing database without migration tracking — stamp as current
+            logger.info("Existing database detected, stamping as current migration")
+            command.stamp(alembic_cfg, "001_initial")
+        else:
+            # Either fresh DB or already tracked — run migrations to head
+            command.upgrade(alembic_cfg, "head")
+
     async with engine.begin() as conn:
-        # Check if alembic_version table exists
-        result = await conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
-        ))
-        has_alembic = result.fetchone() is not None
+        await conn.run_sync(_do_migrate)
 
-        # Check if existing tables exist (pre-Alembic database)
-        result = await conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='reviews'"
-        ))
-        has_tables = result.fetchone() is not None
-
-    if has_tables and not has_alembic:
-        # Existing database without migration tracking — stamp as current
-        logger.info("Existing database detected, stamping as current migration")
-        command.stamp(alembic_cfg, "001_initial")
-    else:
-        command.upgrade(alembic_cfg, "head")
+    logger.info("Database migrations applied")
 ```
 
 ### 1.5 Edge Cases
@@ -773,6 +816,7 @@ The truncation is applied before serialization, so the JSON output is always bou
 import json
 import logging
 
+import pytest
 import structlog
 
 from review_bot.utils.logging import setup_logging
@@ -914,6 +958,7 @@ from typing import Any
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 from opentelemetry.sdk.resources import Resource
 
 logger = logging.getLogger("review-bot")
@@ -946,7 +991,7 @@ def setup_tracing(
 
     provider = TracerProvider(
         resource=resource,
-        sampler=trace.sampling.TraceIdRatioBased(sample_rate),
+        sampler=TraceIdRatioBased(sample_rate),
     )
 
     if otlp_endpoint:
