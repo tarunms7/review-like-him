@@ -129,6 +129,6 @@ def init_cmd() -> None:
 
     click.echo(click.style(f"\n  ✓ Config saved to {CONFIG_FILE}", fg="green"))
     click.echo(click.style("\n✓ Setup complete.", fg="green", bold=True))
-    click.echo(f"\nNext steps:")
-    click.echo(f"  1. Create a persona: review-bot persona create <name> --github-user <user>")
-    click.echo(f"  2. Start the server: review-bot server start")
+    click.echo("\nNext steps:")
+    click.echo("  1. Create a persona: review-bot persona create <name> --github-user <user>")
+    click.echo("  2. Start the server: review-bot server start")
