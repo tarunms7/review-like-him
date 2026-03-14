@@ -619,40 +619,147 @@ def _format_repo_context(self, ctx: RepoContext) -> str:
 **Complexity:** 🔴 Large
 **Goal:** Track PR author reactions (👍/👎) and comment resolve/dismiss actions on bot review comments, then use this feedback to refine persona priorities over time.
 
-### 3.1 Webhook Handling for Feedback Events
+### 3.1 Feedback Collection Strategy
 
-#### File: `review_bot/server/webhooks.py` (modifications)
+#### Why not webhooks for reactions?
 
-Add handlers for two new GitHub webhook event types:
+GitHub does **not** send webhook payloads when reactions are added to or removed from pull request review comments. The `pull_request_review_comment` webhook only fires for `created`, `edited`, and `deleted` actions on the comment itself — there is no "reaction" sub-event. Therefore, reaction data must be collected via **polling the GitHub REST API**.
+
+#### Polling-based reaction collection
+
+##### New file: `review_bot/review/feedback_poller.py`
+
+```python
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+from review_bot.github.api import GitHubAPIClient
+
+logger = logging.getLogger("review-bot")
+
+# Reaction → feedback signal mapping
+REACTION_FEEDBACK: dict[str, str] = {
+    "+1": "positive",
+    "-1": "negative",
+    "confused": "negative",
+    "hooray": "positive",
+    "heart": "positive",
+    "rocket": "positive",
+    "laugh": "neutral",  # Ambiguous — ignored in scoring
+    "eyes": "neutral",
+}
+
+
+@dataclass
+class ReactionPollResult:
+    """Result of polling reactions for a single comment."""
+
+    comment_id: str
+    reactions: list[dict]  # Raw reaction objects from GitHub API
+    poll_timestamp: str  # ISO 8601
+
+
+class FeedbackPoller:
+    """Polls GitHub REST API for reactions on bot review comments.
+
+    Runs on a configurable schedule (default: every 6 hours) and collects
+    reactions on all tracked bot comments that are younger than
+    `max_comment_age` (default: 30 days).
+    """
+
+    def __init__(
+        self,
+        github_client: GitHubAPIClient,
+        feedback_store: FeedbackStore,
+        poll_interval: timedelta = timedelta(hours=6),
+        max_comment_age: timedelta = timedelta(days=30),
+    ) -> None:
+        self._client = github_client
+        self._store = feedback_store
+        self._poll_interval = poll_interval
+        self._max_comment_age = max_comment_age
+
+    async def poll_reactions_for_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> list[dict]:
+        """Fetch reactions for a single PR review comment via REST API.
+
+        Uses: GET /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions
+        Handles pagination for comments with many reactions.
+        Returns list of reaction objects with 'content' and 'user' fields.
+        """
+
+    async def poll_all_tracked_comments(self) -> int:
+        """Poll reactions for all tracked bot comments within max_comment_age.
+
+        Returns the number of new feedback events recorded.
+
+        Steps:
+        1. Query review_comment_tracking for comments posted within max_comment_age.
+        2. For each comment, call poll_reactions_for_comment().
+        3. Diff against previously recorded reactions (stored in review_feedback).
+        4. Insert new FeedbackEvents for any new reactions found.
+        5. Handle deleted reactions by marking them as retracted.
+        """
+
+    async def run_poll_loop(self) -> None:
+        """Long-running loop that polls on schedule.
+
+        Called from the FastAPI lifespan as a background task:
+        asyncio.create_task(poller.run_poll_loop())
+        """
+```
+
+##### Scheduling in server lifespan
+
+```python
+# In review_bot/server/app.py lifespan:
+from review_bot.review.feedback_poller import FeedbackPoller
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ... existing startup ...
+    poller = FeedbackPoller(
+        github_client=app.state.github_client,
+        feedback_store=app.state.feedback_store,
+        poll_interval=timedelta(hours=settings.feedback_poll_interval_hours),
+    )
+    poll_task = asyncio.create_task(poller.run_poll_loop())
+    yield
+    poll_task.cancel()
+    # ... existing shutdown ...
+```
+
+#### Webhook-based feedback (non-reaction events)
+
+For events that GitHub **does** deliver via webhooks, we handle them directly:
+
+##### File: `review_bot/server/webhooks.py` (modifications)
 
 ```python
 # In webhook_handler(), add new event routing:
 elif event == "pull_request_review_comment" and data.get("action") == "created":
-    # Track replies to bot comments (potential feedback)
+    # Track replies to bot comments (potential feedback via reply text)
     await _handle_review_comment_reply(data)
-elif event == "issue_comment" and data.get("action") == "edited":
-    # Track comment edits (resolve/unresolve in GH UI triggers edit)
-    pass  # Resolve tracking handled via reactions instead
-
-# New webhook event type that requires GitHub App permissions:
-# "pull_request_review_comment" event with "reaction" sub-events
+elif event == "pull_request_review" and data.get("action") == "dismissed":
+    # Track review dismissals (negative signal for all comments in that review)
+    await _handle_review_dismissed(data)
 ```
 
 **New handler functions:**
 
 ```python
-async def _handle_reaction_event(data: dict) -> None:
-    """Handle reaction created/deleted events on review comments.
+async def _handle_review_comment_reply(data: dict) -> None:
+    """Handle reply comments on bot review comments.
 
-    Maps reactions to feedback signals:
-    - 👍 (+1) → positive feedback
-    - 👎 (-1) → negative feedback
-    - 😕 (confused) → negative feedback
-    - 🎉 (hooray) → strong positive
-    - ❤️ (heart) → positive feedback
-    - 🚀 (rocket) → positive feedback
-
-    Ignores reactions from the bot itself.
+    If the reply is on a bot comment, analyze sentiment (e.g., "good catch"
+    vs "this is wrong") as a lightweight feedback signal.
     """
 
 async def _handle_review_dismissed(data: dict) -> None:
@@ -666,7 +773,8 @@ async def _handle_review_dismissed(data: dict) -> None:
 
 The GitHub App must be configured with:
 - `pull_request_review_comment` webhook events (already likely enabled)
-- `issues:reactions` read permission (for reaction events)
+- `pull_request_review` webhook events (for dismiss tracking)
+- `reactions:read` permission on the GitHub App (for REST API polling)
 
 ### 3.2 Feedback Database Schema
 
@@ -1384,9 +1492,19 @@ def _recompute_verdict(
 ) -> str:
     """Recompute verdict after filtering.
 
-    If the original verdict was 'request_changes' but all blocking
-    issues were filtered, downgrade to 'comment' or 'approve'.
+    Rules:
+    - Never UPGRADES severity: if original was 'approve', stays 'approve'.
+      If original was 'comment', can stay 'comment' or downgrade to 'approve',
+      but never upgrade to 'request_changes'.
+    - Only DOWNGRADES: 'request_changes' → 'comment' or 'approve' if blocking
+      issues were filtered out.
+
+    Verdict priority order (high → low): request_changes > comment > approve
     """
+    # Never upgrade from the original verdict
+    if original_verdict == "approve":
+        return "approve"
+
     if not sections and not inline_comments:
         return "approve"
 
@@ -1395,9 +1513,18 @@ def _recompute_verdict(
         CATEGORY_SEVERITY.get(s.title, 2) >= 3
         for s in sections
     )
+
     if has_blocking:
-        return "request_changes"
-    return "comment"
+        # Only return request_changes if original was also request_changes
+        if original_verdict == "request_changes":
+            return "request_changes"
+        return "comment"
+
+    # Non-blocking findings remain — verdict is 'comment' at most
+    if original_verdict in ("request_changes", "comment"):
+        return "comment"
+
+    return original_verdict
 ```
 
 ### 5.3 Orchestrator Integration
@@ -1489,7 +1616,8 @@ This is checked in `filter_result_by_severity()` before filtering — any findin
 - `test_filter_removes_low_severity` — `min_severity=3` removes Style and Testing findings.
 - `test_filter_keeps_all_at_zero` — `min_severity=0` returns result unchanged.
 - `test_filter_all_removed_creates_lgtm` — All findings below threshold → LGTM result.
-- `test_filter_recomputes_verdict` — Blocking bugs filtered → verdict downgrades to `comment`.
+- `test_filter_recomputes_verdict_downgrade` — Blocking bugs filtered → verdict downgrades from `request_changes` to `comment`.
+- `test_filter_recomputes_verdict_never_upgrades` — Original `approve` stays `approve` even if non-blocking sections remain.
 - `test_security_override_bypasses_filter` — "SQL injection" finding kept even at `min_severity=4`.
 - `test_infer_category_keywords` — Body with "null pointer" → `"Bugs"`.
 - `test_inline_comment_category_inference` — Inline comment categorized for severity check.
