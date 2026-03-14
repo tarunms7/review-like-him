@@ -196,7 +196,10 @@ class RepoScanner:
             logger.warning("HTTP error reading file %s in %s/%s", path, owner, repo)
             return None
         except Exception:
-            logger.warning("Unexpected error reading file %s in %s/%s", path, owner, repo, exc_info=True)
+            logger.warning(
+                "Unexpected error reading file %s in %s/%s",
+                path, owner, repo, exc_info=True,
+            )
             return None
 
     def _detect_languages(self, root_names: set[str]) -> list[str]:
