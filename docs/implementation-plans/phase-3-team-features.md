@@ -758,7 +758,9 @@ async def _run_comparison(
     pr_url: str, persona_names: list[str], timeout: float, json_out: bool,
 ) -> None:
     import json
+    import os
     import re
+    import sys
 
     import httpx
 
@@ -780,7 +782,7 @@ async def _run_comparison(
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if not token:
         click.echo("Error: GITHUB_TOKEN or GH_TOKEN environment variable required", err=True)
-        return
+        sys.exit(1)
 
     async with httpx.AsyncClient(
         headers={
