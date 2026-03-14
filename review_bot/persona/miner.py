@@ -46,29 +46,51 @@ class GitHubReviewMiner:
         self._etags: dict[str, str] = {}
 
     async def _request(self, url: str, params: dict[str, Any] | None = None) -> httpx.Response:
-        """Make a GitHub API request with ETag support and rate limit respect."""
+        """Make a GitHub API request with ETag support, rate limit respect, and retry on 429."""
         headers: dict[str, str] = {}
         cache_key = f"{url}?{params}" if params else url
 
         if cache_key in self._etags:
             headers["If-None-Match"] = self._etags[cache_key]
 
-        response = await self._client.get(url, params=params, headers=headers)
+        max_retries = 5
+        backoff = 1.0
 
-        # Store ETag for conditional requests
-        if "ETag" in response.headers:
-            self._etags[cache_key] = response.headers["ETag"]
+        for attempt in range(max_retries):
+            response = await self._client.get(url, params=params, headers=headers)
 
-        # Respect rate limits
-        remaining = response.headers.get("X-RateLimit-Remaining")
-        if remaining is not None and int(remaining) <= 1:
-            reset_at = int(response.headers.get("X-RateLimit-Reset", "0"))
-            import time
+            # Store ETag for conditional requests
+            if "ETag" in response.headers:
+                self._etags[cache_key] = response.headers["ETag"]
 
-            sleep_seconds = max(reset_at - int(time.time()) + RATE_LIMIT_BUFFER, 1)
-            logger.warning("Rate limit near exhaustion, sleeping %d seconds", sleep_seconds)
-            await asyncio.sleep(sleep_seconds)
+            # Handle 429 rate limit responses with exponential backoff
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else backoff
+                logger.warning(
+                    "Rate limited (429) on attempt %d/%d, retrying in %.1fs",
+                    attempt + 1,
+                    max_retries,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+                backoff *= 2
+                continue
 
+            # Respect approaching rate limits
+            remaining = response.headers.get("X-RateLimit-Remaining")
+            if remaining is not None and int(remaining) <= 1:
+                reset_at = int(response.headers.get("X-RateLimit-Reset", "0"))
+                import time
+
+                sleep_seconds = max(reset_at - int(time.time()) + RATE_LIMIT_BUFFER, 1)
+                logger.warning("Rate limit near exhaustion, sleeping %d seconds", sleep_seconds)
+                await asyncio.sleep(sleep_seconds)
+
+            return response
+
+        # Final attempt exhausted — return last response and let caller handle
+        logger.error("Rate limit retries exhausted after %d attempts for %s", max_retries, url)
         return response
 
     async def _paginate(

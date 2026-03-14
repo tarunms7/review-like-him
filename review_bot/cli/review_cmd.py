@@ -54,21 +54,51 @@ def review_cmd(pr_url: str, persona_name: str) -> None:
     )
 
     async def _review():
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from review_bot.config.paths import ensure_directories
+        from review_bot.config.settings import Settings
         from review_bot.github.api import GitHubAPIClient
         from review_bot.review.orchestrator import ReviewOrchestrator
+
+        settings = Settings()
+        ensure_directories()
 
         headers = {"Accept": "application/vnd.github+json"}
         gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         if gh_token:
             headers["Authorization"] = f"Bearer {gh_token}"
+        else:
+            click.echo(
+                click.style(
+                    "Warning: No GITHUB_TOKEN or GH_TOKEN set. "
+                    "Private repos will not be accessible.",
+                    fg="yellow",
+                )
+            )
 
-        async with httpx.AsyncClient(
-            headers=headers,
-            timeout=30.0,
-        ) as client:
-            github_client = GitHubAPIClient(client)
-            orchestrator = ReviewOrchestrator(github_client, store)
-            return await orchestrator.run_review_from_url(pr_url, persona_name)
+        # Create database engine for logging reviews
+        engine = create_async_engine(settings.db_url, echo=False)
+
+        try:
+            # Initialize database tables
+            from review_bot.server.app import _init_database
+
+            await _init_database(engine)
+
+            async with httpx.AsyncClient(
+                headers=headers,
+                timeout=30.0,
+            ) as client:
+                github_client = GitHubAPIClient(client)
+                orchestrator = ReviewOrchestrator(
+                    github_client,
+                    store,
+                    db_engine=engine,
+                )
+                return await orchestrator.run_review_from_url(pr_url, persona_name)
+        finally:
+            await engine.dispose()
 
     try:
         result = _run_async(_review())

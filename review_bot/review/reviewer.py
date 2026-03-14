@@ -2,24 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 
 logger = logging.getLogger("review-bot")
 
+# Backoff settings for rate limit retries
+_INITIAL_BACKOFF = 2.0  # seconds
+_MAX_BACKOFF = 60.0  # seconds
+
 
 class ClaudeReviewer:
     """Executes review prompts via Claude Agent SDK with retry logic."""
 
-    def __init__(self, max_retries: int = 1) -> None:
+    def __init__(self, max_retries: int = 3) -> None:
         self._max_retries = max_retries
 
     async def review(self, prompt: str) -> str:
         """Execute the review prompt and return raw LLM output.
 
-        Implements a single retry on failure. Detects auth/session
-        issues and logs clear messages.
+        Implements retries with exponential backoff on rate limits (429).
+        Detects auth/session issues and logs clear messages.
 
         Args:
             prompt: The full review prompt.
@@ -31,6 +36,7 @@ class ClaudeReviewer:
             RuntimeError: If review fails after all retry attempts.
         """
         last_error: Exception | None = None
+        backoff = _INITIAL_BACKOFF
 
         for attempt in range(self._max_retries + 1):
             try:
@@ -47,9 +53,24 @@ class ClaudeReviewer:
                 self._log_error(exc, attempt)
 
                 if attempt < self._max_retries:
-                    logger.info("Retrying review (attempt %d)...", attempt + 2)
+                    if self._is_rate_limit(exc):
+                        logger.info(
+                            "Rate limited, backing off %.1fs before retry %d...",
+                            backoff,
+                            attempt + 2,
+                        )
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, _MAX_BACKOFF)
+                    else:
+                        logger.info("Retrying review (attempt %d)...", attempt + 2)
 
         raise RuntimeError(f"Review failed after {self._max_retries + 1} attempts: {last_error}")
+
+    @staticmethod
+    def _is_rate_limit(exc: Exception) -> bool:
+        """Check if an exception indicates a rate limit (429) error."""
+        exc_str = str(exc).lower()
+        return "rate" in exc_str or "429" in exc_str
 
     async def _execute(self, prompt: str) -> str:
         """Execute a single prompt via Claude Agent SDK."""

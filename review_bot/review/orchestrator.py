@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from review_bot.github.api import GitHubAPIClient
+from review_bot.persona.profile import PersonaProfile
 from review_bot.persona.store import PersonaStore
 from review_bot.review.formatter import ReviewFormatter, ReviewResult
 from review_bot.review.github_poster import ReviewPoster
@@ -215,34 +216,32 @@ class ReviewOrchestrator:
         owner: str,
         repo: str,
         pr_number: int,
-        persona: object,
+        persona: PersonaProfile,
         pr_data: dict,
         files: list,
         pr_url: str,
     ) -> ReviewResult:
-        """Handle PRs with 500+ files by posting a summary comment."""
-        file_summary = (
-            f"This PR has {len(files)} files — too large for a "
-            f"detailed line-by-line review. Here's a high-level summary:"
-        )
-
+        """Handle PRs with 500+ files by posting a persona-aware summary comment."""
         added = sum(1 for f in files if f.status == "added")
         modified = sum(1 for f in files if f.status == "modified")
         removed = sum(1 for f in files if f.status == "removed")
 
+        tone_note = f" (tone: {persona.tone})" if persona.tone else ""
         summary = (
-            f"{file_summary}\n\n"
+            f"**{persona.name}**{tone_note} here — this PR has **{len(files)} files**, "
+            f"which is too large for a detailed line-by-line review.\n\n"
+            f"### File breakdown\n"
             f"- **{added}** files added\n"
             f"- **{modified}** files modified\n"
             f"- **{removed}** files removed\n\n"
-            f"Consider breaking this into smaller PRs for better review."
+            f"Consider breaking this into smaller PRs for better review coverage."
         )
 
         result = ReviewResult(
             verdict="comment",
             summary_sections=[],
             inline_comments=[],
-            persona_name=persona.name if hasattr(persona, "name") else "",
+            persona_name=persona.name,
             pr_url=pr_url,
         )
 

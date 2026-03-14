@@ -101,6 +101,7 @@ class AsyncJobQueue:
                 await self._process_job(job)
                 self._queue.task_done()
             except asyncio.CancelledError:
+                logger.debug("Worker loop cancelled")
                 raise
             except Exception:
                 logger.exception("Unexpected error in worker loop")
@@ -161,7 +162,8 @@ class AsyncJobQueue:
                         job.owner,
                         job.repo,
                         job.pr_number,
-                        f"Review failed for persona '{job.persona_name}': {exc}",
+                        f"⚠️ Review by **{job.persona_name}** could not be completed. "
+                        f"The team has been notified. Please try again later.",
                     )
                 finally:
                     await http_client.aclose()

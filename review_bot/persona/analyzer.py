@@ -36,9 +36,6 @@ Return ONLY valid JSON, no markdown fences or extra text.
 class PersonaAnalyzer:
     """Analyzes weighted review data using Claude to build a PersonaProfile."""
 
-    def __init__(self) -> None:
-        pass
-
     async def analyze(
         self,
         weighted_reviews: list[dict],

@@ -25,7 +25,7 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-step=0
+step_num=0
 SKIP_INIT=false
 
 info()  { echo -e "${BLUE}ℹ ${RESET} $*"; }
@@ -34,9 +34,9 @@ warn()  { echo -e "${YELLOW}⚠ ${RESET} $*"; }
 fail()  { echo -e "${RED}✗ ${RESET} $*"; exit 1; }
 
 step() {
-    step=$((step + 1))
+    step_num=$((step_num + 1))
     echo ""
-    echo -e "${BOLD}${CYAN}[$step]${RESET} ${BOLD}$*${RESET}"
+    echo -e "${BOLD}${CYAN}[$step_num]${RESET} ${BOLD}$*${RESET}"
 }
 
 # ─── Parse arguments ─────────────────────────────────────────────────────────
@@ -48,8 +48,16 @@ parse_args() {
                 SKIP_INIT=true
                 shift
                 ;;
+            -h|--help)
+                echo "Usage: ./setup.sh [--no-init]"
+                echo ""
+                echo "Options:"
+                echo "  --no-init    Skip the interactive review-bot init wizard"
+                echo "  -h, --help   Show this help message"
+                exit 0
+                ;;
             *)
-                warn "Unknown option: $1"
+                warn "Unknown option: $1 (use --help for usage)"
                 shift
                 ;;
         esac
@@ -72,13 +80,35 @@ detect_os() {
     ok "Detected OS: $OS"
 }
 
-# ─── Step 1: Check Python 3.11+ ─────────────────────────────────────────────
+# ─── Check internet connectivity ─────────────────────────────────────────────
+
+check_internet() {
+    step "Checking internet connectivity"
+
+    if command -v curl &>/dev/null; then
+        if curl -sf --connect-timeout 5 --max-time 10 https://pypi.org/simple/ >/dev/null 2>&1; then
+            ok "Internet connectivity verified (pypi.org reachable)"
+            return
+        fi
+    elif command -v wget &>/dev/null; then
+        if wget -q --timeout=5 --spider https://pypi.org/simple/ 2>/dev/null; then
+            ok "Internet connectivity verified (pypi.org reachable)"
+            return
+        fi
+    fi
+
+    warn "Could not verify internet connectivity."
+    info "Package installation may fail if you're offline."
+    info "If you're behind a proxy, ensure HTTP_PROXY/HTTPS_PROXY are set."
+}
+
+# ─── Check Python 3.11+ ─────────────────────────────────────────────────────
 
 check_python() {
     step "Checking Python 3.11+"
 
     local py_cmd=""
-    for cmd in python3 python; do
+    for cmd in python3.13 python3.12 python3.11 python3 python; do
         if command -v "$cmd" &>/dev/null; then
             local ver
             ver=$("$cmd" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
@@ -103,16 +133,28 @@ check_python() {
         else
             echo "    sudo apt update && sudo apt install python3.12 python3.12-venv  (Debian/Ubuntu)"
             echo "    sudo dnf install python3.12  (Fedora)"
+            echo "    sudo pacman -S python  (Arch)"
         fi
         echo "    Or visit https://python.org/downloads"
         echo ""
         fail "Please install Python 3.11+ and re-run this script."
     fi
 
+    # Verify venv module is available (common issue on Debian/Ubuntu)
+    if ! "$py_cmd" -c 'import venv' 2>/dev/null; then
+        echo ""
+        warn "Python venv module not found."
+        echo ""
+        echo "  On Debian/Ubuntu, install it with:"
+        echo "    sudo apt install python3-venv"
+        echo ""
+        fail "Please install the Python venv module and re-run this script."
+    fi
+
     PYTHON="$py_cmd"
 }
 
-# ─── Step 2: Check / install uv ─────────────────────────────────────────────
+# ─── Check / install uv ─────────────────────────────────────────────────────
 
 check_uv() {
     step "Checking for uv package manager"
@@ -124,7 +166,15 @@ check_uv() {
     fi
 
     info "uv not found — installing..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+
+    # Check that curl is available for uv install
+    if ! command -v curl &>/dev/null; then
+        warn "curl not found — cannot install uv automatically. Falling back to pip."
+        _fallback_to_pip
+        return
+    fi
+
+    if curl -LsSf --connect-timeout 10 --max-time 60 https://astral.sh/uv/install.sh | sh 2>/dev/null; then
         # Add uv to PATH for this session
         export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
         if command -v uv &>/dev/null; then
@@ -135,17 +185,25 @@ check_uv() {
     fi
 
     warn "Could not install uv automatically. Falling back to pip."
-    if command -v pip3 &>/dev/null; then
-        INSTALLER="pip3"
-    elif command -v pip &>/dev/null; then
-        INSTALLER="pip"
-    else
-        fail "Neither uv nor pip found. Install uv: https://docs.astral.sh/uv/getting-started/installation/"
-    fi
-    ok "Using $INSTALLER as fallback"
+    _fallback_to_pip
 }
 
-# ─── Step 3: Create venv & install ───────────────────────────────────────────
+_fallback_to_pip() {
+    if "$PYTHON" -m pip --version &>/dev/null; then
+        INSTALLER="pip-module"
+        ok "Using 'python -m pip' as fallback"
+    elif command -v pip3 &>/dev/null; then
+        INSTALLER="pip3"
+        ok "Using pip3 as fallback"
+    elif command -v pip &>/dev/null; then
+        INSTALLER="pip"
+        ok "Using pip as fallback"
+    else
+        fail "No package installer found. Install uv (https://docs.astral.sh/uv/) or pip and re-run."
+    fi
+}
+
+# ─── Create venv & install ───────────────────────────────────────────────────
 
 setup_venv() {
     step "Creating virtual environment & installing package"
@@ -179,11 +237,21 @@ setup_venv() {
         source "$venv_dir/bin/activate"
 
         info "Upgrading pip..."
-        "$INSTALLER" install --upgrade pip || warn "pip upgrade failed (continuing anyway)"
+        if [ "$INSTALLER" = "pip-module" ]; then
+            "$PYTHON" -m pip install --upgrade pip 2>/dev/null || warn "pip upgrade failed (continuing anyway)"
+        else
+            "$INSTALLER" install --upgrade pip 2>/dev/null || warn "pip upgrade failed (continuing anyway)"
+        fi
 
-        info "Installing package with $INSTALLER (this may take a moment)..."
-        if ! "$INSTALLER" install -e ".[dev]"; then
-            fail "$INSTALLER install failed. Check the output above for details."
+        info "Installing package with pip (this may take a moment)..."
+        if [ "$INSTALLER" = "pip-module" ]; then
+            if ! "$PYTHON" -m pip install -e ".[dev]"; then
+                fail "pip install failed. Check the output above for details."
+            fi
+        else
+            if ! "$INSTALLER" install -e ".[dev]"; then
+                fail "$INSTALLER install failed. Check the output above for details."
+            fi
         fi
         ok "Installed review-like-him in editable mode (with dev deps)"
     fi
@@ -204,7 +272,7 @@ setup_venv() {
     fi
 }
 
-# ─── Step 4: Check Claude CLI ───────────────────────────────────────────────
+# ─── Check Claude CLI ───────────────────────────────────────────────────────
 
 check_claude_cli() {
     step "Checking for Claude CLI"
@@ -217,19 +285,22 @@ check_claude_cli() {
         echo "  Install it with:"
         echo "    npm install -g @anthropic-ai/claude-code"
         echo ""
-        echo "  Requires Node.js 18+. If you don't have Node.js:"
-        if [ "$OS" = "macos" ]; then
-            echo "    brew install node"
-        else
-            echo "    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
-            echo "    sudo apt install -y nodejs"
+        if ! command -v node &>/dev/null; then
+            echo "  Node.js is required. Install it first:"
+            if [ "$OS" = "macos" ]; then
+                echo "    brew install node"
+            else
+                echo "    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
+                echo "    sudo apt install -y nodejs  (Debian/Ubuntu)"
+                echo "    sudo dnf install nodejs  (Fedora)"
+            fi
+            echo ""
         fi
-        echo ""
         info "You can continue setup, but Claude CLI is required for reviews."
     fi
 }
 
-# ─── Step 5: Run review-bot init ─────────────────────────────────────────────
+# ─── Run review-bot init ─────────────────────────────────────────────────────
 
 run_init() {
     step "Running review-bot init"
@@ -256,11 +327,11 @@ run_init() {
         }
     else
         warn "Skipping — review-bot CLI not available. Activate the venv and run:"
-        echo "    review-bot init"
+        echo "    source .venv/bin/activate && review-bot init"
     fi
 }
 
-# ─── Step 6: Summary ────────────────────────────────────────────────────────
+# ─── Summary ─────────────────────────────────────────────────────────────────
 
 print_summary() {
     step "Setup complete!"
@@ -276,13 +347,13 @@ print_summary() {
     echo -e "     ${CYAN}source .venv/bin/activate${RESET}"
     echo ""
     echo "  2. Create a reviewer persona from a GitHub user:"
-    echo -e "     ${CYAN}review-bot persona create <github-username>${RESET}"
+    echo -e "     ${CYAN}review-bot persona create deepam --github-user deepam-kapur${RESET}"
     echo ""
-    echo "  3. Review a PR with that persona:"
-    echo -e "     ${CYAN}review-bot review <owner/repo> <pr-number> --persona <name>${RESET}"
-    echo ""
-    echo "  4. Or start the webhook server for automatic reviews:"
+    echo "  3. Start the webhook server for automatic reviews:"
     echo -e "     ${CYAN}review-bot server start${RESET}"
+    echo ""
+    echo "  Or run a one-off review:"
+    echo -e "     ${CYAN}review-bot review https://github.com/org/repo/pull/42 --as deepam${RESET}"
     echo ""
     echo -e "  Run ${CYAN}review-bot --help${RESET} for all available commands."
     echo ""
@@ -299,6 +370,7 @@ main() {
     echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════${RESET}"
 
     detect_os
+    check_internet
     check_python
     check_uv
     setup_venv

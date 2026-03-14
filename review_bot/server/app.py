@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from review_bot.config.paths import ensure_directories
 from review_bot.config.settings import Settings
 from review_bot.github.app import GitHubAppAuth
 from review_bot.persona.store import PersonaStore
@@ -60,13 +61,25 @@ _CREATE_TABLES_SQL = [
     """,
 ]
 
+# SQL for creating indexes on frequently queried columns
+_CREATE_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_reviews_persona_name ON reviews(persona_name)",
+    "CREATE INDEX IF NOT EXISTS idx_reviews_pr_number ON reviews(pr_number)",
+    "CREATE INDEX IF NOT EXISTS idx_reviews_repo ON reviews(repo)",
+    "CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON reviews(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_persona_name ON jobs(persona_name)",
+]
+
 
 async def _init_database(engine: AsyncEngine) -> None:
-    """Create database tables if they don't exist."""
+    """Create database tables and indexes if they don't exist."""
     async with engine.begin() as conn:
         for sql in _CREATE_TABLES_SQL:
             await conn.execute(text(sql))
-    logger.info("Database tables initialized")
+        for sql in _CREATE_INDEXES_SQL:
+            await conn.execute(text(sql))
+    logger.info("Database tables and indexes initialized")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -80,6 +93,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """
     if settings is None:
         settings = Settings()
+
+    # Validate server configuration before starting
+    errors = settings.validate_for_server()
+    if errors:
+        for err in errors:
+            logger.error("Config validation error: %s", err)
+        raise RuntimeError(
+            "Server configuration is invalid:\n"
+            + "\n".join(f"  • {e}" for e in errors)
+        )
+
+    # Ensure data directories exist
+    ensure_directories()
 
     # Store settings and components on app state for access in lifespan
     app_settings = settings
