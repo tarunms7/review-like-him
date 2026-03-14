@@ -4,20 +4,18 @@ from __future__ import annotations
 
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
 from review_bot.github.api import (
     GITHUB_API_BASE,
-    INITIAL_BACKOFF,
     MAX_RETRIES,
     GitHubAPIClient,
     PullRequestFile,
     ReviewComment,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -263,8 +261,8 @@ class TestGitHubAppAuth:
     """Test JWT generation and token caching."""
 
     def test_jwt_generation(self, tmp_path):
-        from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
 
         # Generate a test RSA key
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -276,8 +274,9 @@ class TestGitHubAppAuth:
         key_path = tmp_path / "test-key.pem"
         key_path.write_bytes(pem)
 
-        from review_bot.github.app import GitHubAppAuth
         import jwt as pyjwt
+
+        from review_bot.github.app import GitHubAppAuth
 
         auth = GitHubAppAuth("12345", str(key_path))
         token = auth.get_jwt()
@@ -290,8 +289,8 @@ class TestGitHubAppAuth:
 
     @pytest.mark.asyncio
     async def test_installation_token_caching(self, tmp_path):
-        from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         pem = key.private_bytes(

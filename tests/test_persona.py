@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 import yaml
 
 from review_bot.persona.profile import PersonaProfile, Priority, SeverityPattern
-from review_bot.persona.store import PersonaStore
 from review_bot.persona.temporal import apply_weights, weight_comment
-
 
 # ---------------------------------------------------------------------------
 # PersonaProfile Serialization

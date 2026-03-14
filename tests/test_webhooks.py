@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -18,7 +18,6 @@ from review_bot.server.webhooks import (
     configure,
     router,
 )
-
 
 # ---------------------------------------------------------------------------
 # HMAC Signature Validation

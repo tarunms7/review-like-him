@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import os
-import stat
-from pathlib import Path
 
 import pytest
 
 from review_bot.config.paths import ensure_directories, validate_path
 from review_bot.config.settings import Settings
-
 
 # ---------------------------------------------------------------------------
 # Settings Validation

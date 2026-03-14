@@ -7,12 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from review_bot.github.api import GitHubAPIClient, PullRequestFile
-from review_bot.persona.profile import PersonaProfile, Priority, SeverityPattern
-from review_bot.persona.store import PersonaStore
+from review_bot.github.api import PullRequestFile
 from review_bot.review.formatter import ReviewResult
 from review_bot.review.orchestrator import LARGE_PR_FILE_THRESHOLD, ReviewOrchestrator
-
 
 # ---------------------------------------------------------------------------
 # Helpers
