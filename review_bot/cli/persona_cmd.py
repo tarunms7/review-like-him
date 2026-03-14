@@ -370,6 +370,30 @@ def persona_update(name: str) -> None:
         raise SystemExit(1) from exc
 
 
+@persona.command("delete")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def persona_delete(name: str, yes: bool) -> None:
+    """Delete a persona profile."""
+    store = PersonaStore()
+
+    if not store.exists(name):
+        click.echo(click.style(f"Persona '{name}' not found.", fg="red"))
+        raise SystemExit(1)
+
+    if not yes:
+        if not click.confirm(f"Delete persona '{name}'? This cannot be undone"):
+            click.echo("Cancelled.")
+            return
+
+    try:
+        store.delete(name)
+        click.echo(click.style(f"✓ Persona '{name}' deleted.", fg="green"))
+    except Exception as exc:
+        click.echo(click.style(f"Error deleting persona: {exc}", fg="red"))
+        raise SystemExit(1) from exc
+
+
 @persona.command("edit")
 @click.argument("name")
 def persona_edit(name: str) -> None:
