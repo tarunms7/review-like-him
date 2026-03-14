@@ -39,6 +39,10 @@ def configure(
 def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
     """Verify GitHub HMAC-SHA256 webhook signature."""
     if not secret:
+        logger.warning(
+            "Webhook secret is not configured — HMAC validation is disabled. "
+            "Set REVIEW_BOT_WEBHOOK_SECRET for production use."
+        )
         return True  # No secret configured, skip validation
     if not signature:
         return False
@@ -251,7 +255,7 @@ async def _post_persona_not_found(
         finally:
             await http_client.aclose()
     except Exception:
-        logger.exception("Failed to post persona-not-found comment")
+        logger.exception("Failed to post persona-not-found comment for '%s'", persona_name)
 
 
 async def _enqueue_review(

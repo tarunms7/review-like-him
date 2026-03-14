@@ -101,7 +101,7 @@ class ReviewFormatter:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            pass
+            logger.warning("Direct JSON parse failed, trying code fence extraction")
 
         # Try extracting from markdown code fences
         fence_match = re.search(
@@ -113,7 +113,7 @@ class ReviewFormatter:
             try:
                 return json.loads(fence_match.group(1))
             except json.JSONDecodeError:
-                pass
+                logger.warning("JSON parse from code fence failed, trying brace extraction")
 
         # Try finding a JSON object anywhere in the text
         brace_match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -121,7 +121,7 @@ class ReviewFormatter:
             try:
                 return json.loads(brace_match.group(0))
             except json.JSONDecodeError:
-                pass
+                logger.warning("JSON parse from brace extraction failed")
 
         return None
 

@@ -1,18 +1,12 @@
-# 🤖 review-like-him
+# review-like-him
 
-**AI-powered reviewer bots that mimic real people's code review style.**
+**AI reviewer bots that mimic how real people review code.**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub App](https://img.shields.io/badge/GitHub-App-purple.svg)](https://docs.github.com/en/apps)
 
----
-
-## What is this?
-
-**review-like-him** creates AI reviewer bots that learn and replicate how specific people review code. It mines a developer's past GitHub reviews, builds a persona profile capturing their tone, priorities, and pet peeves, then uses Claude to deliver reviews in their style.
-
-Assign `deepam-bot` to your PR — get a review that sounds exactly like Deepam. Complete with the nitpicks, the architecture concerns, and the communication style you'd expect.
+Assign `deepam-bot` to your PR — get a review that sounds exactly like Deepam. The nitpicks, the architecture concerns, the tone. All learned from their real GitHub review history.
 
 ```
 You  →  Assign deepam-bot to PR #42
@@ -20,6 +14,8 @@ Bot  →  Posts review in Deepam's exact style
          🐛 "This nil check is missing the same edge case you hit in #38..."
          💅 "You know how I feel about single-letter variables."
 ```
+
+---
 
 ## How It Works
 
@@ -34,11 +30,32 @@ Bot  →  Posts review in Deepam's exact style
                  Queue job          + repo context          + diff           as PR review
 ```
 
+1. A developer opens a PR and assigns a persona bot as reviewer
+2. The webhook server validates the event, loads the matching persona profile
+3. The repo scanner detects conventions (tests, CI, linting, frameworks)
+4. Claude reviews the diff through the persona's lens — their priorities, tone, and pet peeves
+5. The bot posts a categorized review with inline comments in the persona's voice
+
+---
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+| Requirement | Version | Check |
+|---|---|---|
+| **Python** | 3.11 or higher | `python3 --version` |
+| **Claude CLI** | Latest | `claude --version` |
+| **GitHub account** | — | With permission to create GitHub Apps |
+| **Node.js** (for Claude CLI) | 18+ | `node --version` |
+
+> **Don't have Claude CLI?** Install it: `npm install -g @anthropic-ai/claude-code`
+
+---
+
 ## Quick Start
 
-### One-command setup
-
-Clone the repo and run the setup script:
+### 1. Clone and set up
 
 ```bash
 git clone https://github.com/your-org/review-like-him.git
@@ -46,86 +63,169 @@ cd review-like-him
 ./setup.sh
 ```
 
-The setup script automatically:
-1. Checks for Python 3.11+
-2. Installs the `uv` package manager (or falls back to pip)
-3. Creates a virtual environment and installs dependencies
-4. Checks for Claude CLI
-5. Runs `review-bot init` to configure your GitHub App
+The setup script checks your Python version, installs dependencies in a virtual environment, and walks you through initial configuration.
 
-### Three commands to your first review
+### 2. Create a persona
 
 ```bash
+source .venv/bin/activate
 review-bot persona create deepam --github-user deepam-kapur
-review-bot server start
-# Assign deepam-bot as reviewer on any PR — done!
 ```
 
-## Manual Installation
+This mines the user's GitHub review history, analyzes their patterns with Claude, and saves a persona profile.
 
-### Prerequisites
+### 3. Start reviewing
 
-- **Python 3.11+**
-- **Claude CLI** — [install instructions](https://docs.anthropic.com/en/docs/claude-cli)
-- **A GitHub account** with permission to create GitHub Apps
+```bash
+# Start the webhook server
+review-bot server start
 
-### Install
+# Or run a one-off review from the CLI
+review-bot review https://github.com/org/repo/pull/42 --as deepam
+```
+
+Assign `deepam-bot` as a reviewer on any PR — done.
+
+---
+
+## Detailed Setup Guide
+
+### Installing dependencies
+
+The recommended way is the setup script, which handles everything automatically:
+
+```bash
+./setup.sh
+```
+
+What it does:
+
+1. Checks for Python 3.11+, tells you how to install it if missing
+2. Installs [uv](https://docs.astral.sh/uv/) (falls back to pip if uv install fails)
+3. Creates a `.venv` virtual environment and installs the package in editable mode
+4. Checks for Claude CLI and provides install instructions if missing
+5. Runs `review-bot init` to configure your GitHub App
+
+To skip the interactive init wizard (useful in CI or scripted setups):
+
+```bash
+./setup.sh --no-init
+```
+
+**Manual installation** (if you prefer):
 
 ```bash
 # Using uv (recommended)
+uv venv .venv --python python3.12
+source .venv/bin/activate
 uv pip install -e ".[dev]"
 
 # Or using pip
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### Initialize
+### Running `review-bot init`
 
 ```bash
 review-bot init
 ```
 
-The interactive wizard will guide you through:
-- Creating a GitHub App (or connecting an existing one)
-- Setting your webhook URL (auto-detects ngrok)
-- Saving config to `~/.review-bot/config.yaml`
+The interactive wizard will:
 
-## Configuration
+- **Create a GitHub App** — opens your browser with pre-filled settings, or connects an existing app
+- **Set your webhook URL** — auto-detects [ngrok](https://ngrok.com/) for local development, or asks for your production URL
+- **Verify Claude CLI** — confirms `claude` is installed and authenticated
+- **Save configuration** — writes to `~/.review-bot/config.yaml`
 
-### Environment Variables
-
-All settings use the `REVIEW_BOT_` prefix:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `REVIEW_BOT_GITHUB_APP_ID` | Your GitHub App ID | — |
-| `REVIEW_BOT_PRIVATE_KEY_PATH` | Path to App private key PEM | `~/.review-bot/private-key.pem` |
-| `REVIEW_BOT_WEBHOOK_SECRET` | Webhook HMAC secret | — |
-| `REVIEW_BOT_WEBHOOK_URL` | Public URL for webhooks | — |
-| `REVIEW_BOT_DB_URL` | SQLite database URL | `~/.review-bot/review-bot.db` |
-| `REVIEW_BOT_HOST` | Server bind host | `0.0.0.0` |
-| `REVIEW_BOT_PORT` | Server bind port | `8000` |
-
-### Config File
-
-Config is stored at `~/.review-bot/config.yaml`. Environment variables take precedence over the config file.
-
-### Directory Structure
+Expected output:
 
 ```
-~/.review-bot/
-├── config.yaml          # Main configuration
-├── private-key.pem      # GitHub App private key
-├── review-bot.db        # SQLite database
-├── personas/            # Persona YAML profiles
-│   ├── deepam.yaml
-│   └── sarah.yaml
-└── repos/               # Cached repo data
+✓ GitHub App created (ID: 123456)
+✓ Webhook URL configured: https://abc123.ngrok.app/webhook
+✓ Claude CLI verified
+✓ Config saved to ~/.review-bot/config.yaml
+✓ Setup complete.
 ```
+
+### Creating a GitHub App
+
+If you prefer to create the GitHub App manually:
+
+1. Go to **Settings → Developer settings → [GitHub Apps → New GitHub App](https://github.com/settings/apps/new)**
+2. Fill in the app details:
+   - **App name**: Your choice (e.g., "ReviewLikeHim")
+   - **Homepage URL**: Your server URL or repo URL
+   - **Webhook URL**: Your server's public URL + `/webhook` (e.g., `https://abc123.ngrok.app/webhook`)
+   - **Webhook secret**: Generate a strong secret and save it
+3. Set permissions:
+
+   | Permission | Access | Purpose |
+   |---|---|---|
+   | Pull requests | **Read & Write** | Post reviews and comments |
+   | Issues | **Read & Write** | Post comments on PRs |
+   | Contents | **Read** | Read repo files and diffs |
+   | Metadata | **Read** | Read repository info |
+
+4. Subscribe to events:
+   - `pull_request` — triggers on reviewer assignment and labels
+   - `pull_request_review` — review activity tracking
+   - `pull_request_review_comment` — comment tracking
+
+5. Click **Create GitHub App**
+6. Note the **App ID** from the app settings page
+7. Generate a **private key** — download the `.pem` file and save it:
+
+   ```bash
+   mv ~/Downloads/your-app.private-key.pem ~/.review-bot/private-key.pem
+   chmod 600 ~/.review-bot/private-key.pem
+   ```
+
+8. Install the app on the repositories you want to use it with
+
+### Setting up a webhook URL
+
+**For local development** — use [ngrok](https://ngrok.com/):
+
+```bash
+ngrok http 8000
+# Copy the forwarding URL (e.g., https://abc123.ngrok.app)
+# Your webhook URL is: https://abc123.ngrok.app/webhook
+```
+
+**For production** — point your domain at the server:
+
+- Deploy behind a reverse proxy (nginx, Caddy)
+- Use a cloud provider with a static IP or domain
+- Webhook URL: `https://your-domain.com/webhook`
+
+### Environment variables
+
+All settings use the `REVIEW_BOT_` prefix. Environment variables take precedence over `config.yaml`.
+
+| Variable | Required | Description | Default |
+|---|---|---|---|
+| `REVIEW_BOT_GITHUB_APP_ID` | **Yes** | Your GitHub App's ID | — |
+| `REVIEW_BOT_PRIVATE_KEY_PATH` | **Yes** | Path to the App's private key `.pem` file | `~/.review-bot/private-key.pem` |
+| `REVIEW_BOT_WEBHOOK_SECRET` | **Yes** | Webhook HMAC secret (set during App creation) | — |
+| `REVIEW_BOT_WEBHOOK_URL` | No | Public URL for webhooks | — |
+| `REVIEW_BOT_DB_URL` | No | SQLite database URL | `~/.review-bot/review-bot.db` |
+| `REVIEW_BOT_HOST` | No | Server bind address | `0.0.0.0` |
+| `REVIEW_BOT_PORT` | No | Server bind port | `8000` |
+
+You can set these in your shell profile, a `.env` file, or pass them directly:
+
+```bash
+export REVIEW_BOT_GITHUB_APP_ID=123456
+export REVIEW_BOT_WEBHOOK_SECRET=your-secret-here
+```
+
+---
 
 ## Usage Guide
 
-### Creating Personas
+### Creating personas
 
 Mine a GitHub user's review history to create a persona:
 
@@ -134,13 +234,29 @@ review-bot persona create deepam --github-user deepam-kapur
 ```
 
 This will:
+
 1. Search all accessible repos for the user's PR reviews
-2. Fetch inline comments and review verdicts
-3. Apply temporal weighting (recent reviews matter more)
+2. Fetch inline comments and review verdicts (with pagination and rate limiting)
+3. Apply temporal weighting — recent reviews (last 3 months) carry 3x weight
 4. Use Claude to analyze patterns and extract the persona profile
 5. Save to `~/.review-bot/personas/deepam.yaml`
 
-### Managing Personas
+You'll see a preview of what the bot learned:
+
+```
+Mining review history for deepam-kapur...
+  Found 847 comments across 12 repos
+  Analyzing patterns with Claude...
+
+Here's what I learned about Deepam:
+  Tone: Direct but supportive, uses humor
+  Top priorities: error handling (critical), test coverage (strict)
+  Pet peeves: magic numbers, catch-all exceptions, commented-out code
+
+✓ Persona saved to ~/.review-bot/personas/deepam.yaml
+```
+
+### Managing personas
 
 ```bash
 # List all personas
@@ -149,20 +265,52 @@ review-bot persona list
 # Show full persona details
 review-bot persona show deepam
 
-# Re-mine and update with latest reviews
+# Re-mine with latest reviews (incremental update)
 review-bot persona update deepam
 
 # Edit persona YAML manually (opens $EDITOR)
 review-bot persona edit deepam
 ```
 
-### Starting the Server
+Manual edits to persona YAML are preserved when you run `persona update` — only mined data is refreshed.
+
+### Triggering reviews
+
+There are three ways to trigger a review on a PR:
+
+**1. Assign as reviewer** — Add `deepam-bot` as a reviewer on the PR in GitHub's UI.
+
+**2. Comment command** — Post a comment on the PR:
+
+```
+/review-as deepam
+/review-as deepam,sarah       # multiple personas
+/review-as deepam sarah        # also works
+```
+
+**3. Label** — Add a label matching `review:<persona>`:
+
+```
+review:deepam
+```
+
+Each persona reviews independently — overlap between reviewers is signal, not noise.
+
+### Manual CLI review
+
+Run a one-off review from the command line without the webhook server:
+
+```bash
+review-bot review https://github.com/org/repo/pull/42 --as deepam
+```
+
+### Starting the server
 
 ```bash
 # Start in foreground
 review-bot server start
 
-# Start with custom host/port
+# Custom host and port
 review-bot server start --host 127.0.0.1 --port 9000
 
 # Start as background daemon
@@ -175,61 +323,124 @@ review-bot server status
 review-bot server logs -n 50
 ```
 
-### Triggering Reviews
+---
 
-There are three ways to trigger a review on a PR:
+## Configuration Reference
 
-**1. Assign as reviewer** — Add `deepam-bot` as a reviewer on the PR
+### Config file
 
-**2. Comment command** — Post a comment on the PR:
-```
-/review-as deepam
-/review-as deepam,sarah       # multiple personas
-/review-as deepam sarah        # also works
-```
+Main configuration lives at `~/.review-bot/config.yaml`:
 
-**3. Label** — Add a label matching `review:<persona>`:
-```
-review:deepam
-```
+```yaml
+github:
+  app_id: 123456
+  private_key_path: ~/.review-bot/private-key.pem
+  webhook_secret: your-secret-here
+  webhook_url: https://abc123.ngrok.app/webhook
 
-### Manual Review
+server:
+  host: 0.0.0.0
+  port: 8000
 
-Run a one-off review from the command line:
-
-```bash
-review-bot review https://github.com/org/repo/pull/42 --as deepam
+database:
+  url: sqlite:///~/.review-bot/review-bot.db
 ```
 
-## GitHub App Setup
+Environment variables (with `REVIEW_BOT_` prefix) override config file values.
 
-### Required Permissions
+### Directory structure
 
-| Permission | Access | Purpose |
-|------------|--------|---------|
-| Pull requests | **Write** | Post reviews and comments |
-| Issues | **Write** | Post comments on PRs |
-| Contents | **Read** | Read repo files and diffs |
-| Metadata | **Read** | Read repository info |
+```
+~/.review-bot/
+├── config.yaml          # Main configuration
+├── private-key.pem      # GitHub App private key (chmod 600)
+├── review-bot.db        # SQLite database (review history, job queue)
+├── personas/            # Persona YAML profiles
+│   ├── deepam.yaml
+│   └── sarah.yaml
+└── repos/               # Cached repo data
+```
 
-### Webhook Events
+### Persona YAML format
 
-Subscribe to these events:
+```yaml
+name: deepam
+github_user: deepam-kapur
+mined_from: 847 comments across 12 repos
+last_updated: 2026-03-13
 
-- `pull_request` — triggers on reviewer assignment and labels
-- `pull_request_review` — review activity tracking
-- `pull_request_review_comment` — comment tracking
+priorities:
+  - category: error_handling
+    severity: critical           # critical | strict | moderate | opinionated
+    description: "Always flags missing error paths"
+  - category: test_coverage
+    severity: strict
+    description: "Won't approve without tests for new logic"
 
-### Setup Steps
+pet_peeves:
+  - "magic numbers without constants"
+  - "catch-all exception handlers"
+  - "commented-out code left in PRs"
 
-1. Go to [GitHub App settings](https://github.com/settings/apps/new)
-2. Set the webhook URL to your server's public URL
-3. Select the permissions and events listed above
-4. Generate a private key and save it to `~/.review-bot/private-key.pem`
-5. Note the App ID and webhook secret
-6. Run `review-bot init` or set the environment variables
+tone: "direct but supportive. Uses humor. Explains the 'why' behind feedback."
 
-## Architecture
+severity_pattern:
+  blocks_on:
+    - "missing error handling"
+    - "no tests for new logic"
+    - "security issues"
+  nits_on:
+    - "naming conventions"
+    - "formatting"
+  approves_when: "logic is sound, tests exist, errors are handled"
+
+overrides:                       # manual additions, preserved on re-mine
+  - "Extra strict about database migrations"
+```
+
+---
+
+## Troubleshooting
+
+### Webhook not receiving events
+
+| Symptom | Solution |
+|---|---|
+| No events arriving at server | Verify your webhook URL is publicly accessible. Check with `curl -X POST https://your-url/webhook` |
+| ngrok URL stopped working | ngrok free URLs rotate on restart. Update the webhook URL in your GitHub App settings and `config.yaml` |
+| Events arriving but 401 response | Webhook secret mismatch. Ensure `REVIEW_BOT_WEBHOOK_SECRET` matches what's set in the GitHub App |
+| Events arriving but no review posted | Check `review-bot server logs` for errors. The persona may not exist for the assigned bot name |
+
+### Persona mining fails
+
+| Symptom | Solution |
+|---|---|
+| "Rate limit exceeded" | The miner respects rate limits automatically. If it fails, wait and retry. Check `X-RateLimit-Reset` header timing |
+| "No reviews found" | The GitHub user may not have public review activity, or your GitHub App may not have access to their repos. Verify app installation |
+| Mining is very slow | Large review histories take time. The miner paginates and applies rate limiting. Use `--verbose` for progress details |
+| Claude analysis fails | Ensure Claude CLI is authenticated: run `claude` in your terminal. If session expired, run `claude login` |
+
+### Review not posting
+
+| Symptom | Solution |
+|---|---|
+| "Persona not found" | The persona name in the assignment must match an existing persona. Check `review-bot persona list` |
+| "Permission denied" posting review | The GitHub App needs **Read & Write** access to Pull Requests. Check app permissions in GitHub settings |
+| Review posts as comment instead of review | This is a fallback — the PR review API may have failed. Check logs for the original error |
+| "Claude session expired" | Run `claude login` to re-authenticate. The server will retry automatically on the next event |
+
+### General issues
+
+| Symptom | Solution |
+|---|---|
+| `review-bot: command not found` | Activate the virtual environment: `source .venv/bin/activate` |
+| Import errors on startup | Re-run `uv pip install -e ".[dev]"` or `pip install -e ".[dev]"` |
+| Database locked errors | Another instance may be running. Check `review-bot server status` and stop duplicates |
+| Config not loading | Ensure `~/.review-bot/config.yaml` exists and is valid YAML. Environment variables override config values |
+
+---
+
+## Architecture Overview
 
 ```
 review_bot/
@@ -240,111 +451,47 @@ review_bot/
 │   ├── review_cmd.py    # Manual review trigger
 │   └── server_cmd.py    # Server start/status/logs
 ├── config/              # Configuration management
-│   ├── paths.py         # Default file/directory paths
-│   └── settings.py      # Pydantic BaseSettings with env vars
+│   ├── paths.py         # Default file/directory paths (~/.review-bot/*)
+│   └── settings.py      # Pydantic BaseSettings with env var binding
 ├── github/              # GitHub integration
 │   ├── api.py           # Async GitHub API client (httpx)
-│   ├── app.py           # GitHub App JWT auth & token caching
-│   └── setup.py         # App creation helper
+│   ├── app.py           # GitHub App JWT auth & installation token caching
+│   └── setup.py         # Interactive App creation helper
 ├── persona/             # Persona engine
-│   ├── analyzer.py      # Claude-powered pattern extraction
-│   ├── miner.py         # GitHub review history mining
-│   ├── profile.py       # Persona data models
-│   ├── store.py         # YAML persistence
-│   └── temporal.py      # Time-based review weighting
+│   ├── analyzer.py      # Claude-powered review pattern extraction
+│   ├── miner.py         # GitHub review history mining (paginated, rate-limited)
+│   ├── profile.py       # Persona data models (Pydantic)
+│   ├── store.py         # YAML persistence for persona profiles
+│   └── temporal.py      # Time-based review weighting (recent = higher weight)
 ├── review/              # Review pipeline
-│   ├── formatter.py     # Structured output formatting
-│   ├── github_poster.py # Post reviews to GitHub API
+│   ├── formatter.py     # LLM output → structured categorized review
+│   ├── github_poster.py # Post reviews + inline comments via GitHub API
 │   ├── orchestrator.py  # End-to-end review coordination
-│   ├── prompt_builder.py# Persona + context → Claude prompt
-│   ├── repo_scanner.py  # Detect repo conventions
+│   ├── prompt_builder.py# Persona + repo context + diff → Claude prompt
+│   ├── repo_scanner.py  # Auto-detect repo conventions (tests, CI, linting)
 │   └── reviewer.py      # Claude Code SDK integration
 ├── server/              # Webhook server
 │   ├── app.py           # FastAPI application factory
-│   ├── queue.py         # Async job queue & worker
-│   └── webhooks.py      # Event routing & validation
+│   ├── queue.py         # Async job queue (asyncio, upgradeable to Redis)
+│   └── webhooks.py      # Event routing & HMAC signature validation
 └── utils/               # Shared utilities
-    ├── git.py           # Git operations
-    └── logging.py       # Structured logging
+    ├── git.py           # Git operations (clone, diff)
+    └── logging.py       # Structured logging setup
 ```
 
-### Key Design Decisions
+### Key design decisions
 
-- **Single GitHub App** — One app, multiple personas. No separate accounts needed per reviewer.
-- **Claude Code SDK** — Uses CLI auth, no API keys to manage.
+- **Single GitHub App** — one app, multiple personas. No separate accounts per reviewer.
+- **Claude Code SDK** — uses CLI auth, no API keys to manage.
 - **Async throughout** — httpx, aiosqlite, FastAPI for non-blocking I/O.
-- **Monolith-ready for scale** — Module boundaries allow swapping SQLite → PostgreSQL and asyncio queue → Redis with config changes.
+- **Monolith-ready for scale** — module boundaries allow swapping SQLite → PostgreSQL and asyncio queue → Redis with config changes.
+- **Repo-aware reviews** — the bot scans each repo's conventions before reviewing, so it adapts to context (won't demand tests in repos without test infrastructure).
 
-## Persona System
-
-### How Mining Works
-
-1. **Discovery** — Searches GitHub for all repos where the user has review activity
-2. **Collection** — Fetches inline review comments and PR review verdicts with pagination
-3. **Rate limiting** — Monitors `X-RateLimit-Remaining`, sleeps when near the limit
-4. **Conditional requests** — Uses ETags to minimize redundant API calls
-
-### Temporal Weighting
-
-Recent reviews influence the persona more heavily:
-
-| Review Age | Weight | Rationale |
-|------------|--------|-----------|
-| **≤ 3 months** | **3.0×** | Current style and priorities |
-| **3–12 months** | **1.5×** | Established patterns |
-| **> 12 months** | **0.5×** | May reflect outdated preferences |
-
-### What Gets Extracted
-
-- **Tone** — Communication style (direct, diplomatic, sarcastic, thorough, etc.)
-- **Priorities** — What they care about, with severity levels (critical, strict, moderate, opinionated)
-- **Pet peeves** — Specific things that always trigger comments
-- **Severity pattern** — What they block on, what they nit on, when they approve
-
-### Manual Overrides
-
-Edit any persona YAML to fine-tune the profile. Manual overrides are preserved when re-mining:
-
-```bash
-review-bot persona edit deepam
-```
-
-## Review Output Format
-
-Reviews are posted as structured GitHub PR reviews with categorized findings:
-
-### Categories
-
-| Emoji | Category | What it covers |
-|-------|----------|---------------|
-| 🐛 | **Bugs** | Logic errors, race conditions, edge cases |
-| 🏗️ | **Architecture** | Structural concerns, SRP violations |
-| 🧪 | **Testing** | Missing coverage, weak assertions (only if repo has tests) |
-| 💅 | **Style** | Naming, formatting, persona pet peeves |
-| 🔒 | **Security** | Vulnerabilities, injection risks |
-| ⚡ | **Performance** | Inefficiencies, N+1 queries |
-
-### Verdicts
-
-| Verdict | Meaning |
-|---------|---------|
-| `approve` | Looks good, ship it |
-| `request_changes` | Blocking issues found |
-| `comment` | Non-blocking feedback |
-
-### Repo-Aware Reviews
-
-The review pipeline scans the target repo to detect:
-- Test framework and coverage tooling
-- CI configuration
-- Linting setup
-- Language and frameworks
-
-This ensures reviews are contextual — the bot won't demand tests if the repo has no test infrastructure.
+---
 
 ## Development
 
-### Dev Setup
+### Dev setup
 
 ```bash
 git clone https://github.com/your-org/review-like-him.git
@@ -352,7 +499,7 @@ cd review-like-him
 uv pip install -e ".[dev]"
 ```
 
-### Running Tests
+### Running tests
 
 ```bash
 pytest
@@ -365,23 +512,20 @@ ruff check .
 ruff format .
 ```
 
-Ruff is configured with:
-- Line length: 100
-- Target: Python 3.11
-- Rules: E, F, I, N, W, UP
+Ruff config: line length 100, target Python 3.11, rules: E, F, I, N, W, UP.
 
 ## Tech Stack
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **CLI** | [Click](https://click.palletsprojects.com/) | Command-line interface |
-| **Server** | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) | Webhook listener |
-| **LLM** | [Claude Code SDK](https://docs.anthropic.com/) | AI-powered reviews |
-| **Database** | [SQLite](https://www.sqlite.org/) + [SQLAlchemy](https://www.sqlalchemy.org/) + [aiosqlite](https://github.com/omnilib/aiosqlite) | Async persistence |
-| **Config** | [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) | Type-safe configuration |
-| **HTTP** | [httpx](https://www.python-httpx.org/) | Async GitHub API client |
-| **Auth** | [PyJWT](https://pyjwt.readthedocs.io/) + [cryptography](https://cryptography.io/) | GitHub App authentication |
+| Component | Technology |
+|---|---|
+| **CLI** | [Click](https://click.palletsprojects.com/) |
+| **Server** | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) |
+| **LLM** | [Claude Code SDK](https://docs.anthropic.com/) |
+| **Database** | [SQLite](https://www.sqlite.org/) + [SQLAlchemy](https://www.sqlalchemy.org/) + [aiosqlite](https://github.com/omnilib/aiosqlite) |
+| **Config** | [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) |
+| **HTTP** | [httpx](https://www.python-httpx.org/) |
+| **Auth** | [PyJWT](https://pyjwt.readthedocs.io/) + [cryptography](https://cryptography.io/) |
 
 ## License
 
-[MIT](LICENSE) — do whatever you want with it.
+[MIT](LICENSE)
