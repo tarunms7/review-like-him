@@ -28,6 +28,13 @@ _LANGUAGE_MARKERS: dict[str, str] = {
     "composer.json": "php",
 }
 
+_CONFIG_MARKERS: dict[str, str] = {
+    "setup.py": "python",
+    "go.mod": "go",
+    "Cargo.toml": "rust",
+    "pom.xml": "java",
+}
+
 _FRAMEWORK_MARKERS: dict[str, str] = {
     "next.config.js": "next",
     "next.config.mjs": "next",
@@ -185,7 +192,11 @@ class RepoScanner:
             if isinstance(result, dict) and result.get("content"):
                 return base64.b64decode(result["content"]).decode("utf-8")
             return None
-        except (httpx.HTTPStatusError, Exception):
+        except httpx.HTTPStatusError:
+            logger.warning("HTTP error reading file %s in %s/%s", path, owner, repo)
+            return None
+        except Exception:
+            logger.warning("Unexpected error reading file %s in %s/%s", path, owner, repo, exc_info=True)
             return None
 
     def _detect_languages(self, root_names: set[str]) -> list[str]:
@@ -223,10 +234,21 @@ class RepoScanner:
         systems: list[str] = []
         for marker, ci in _CI_MARKERS.items():
             if "/" in marker:
-                # Directory-based marker
+                # Directory-based marker — validate it has actual workflow files
                 dir_name = marker.split("/")[0]
+                subpath = marker  # e.g. ".github/workflows"
                 if dir_name in root_dirs:
-                    systems.append(ci)
+                    contents = await self._list_dir(owner, repo, subpath)
+                    if contents and any(
+                        item.get("name", "").endswith((".yml", ".yaml"))
+                        for item in contents
+                    ):
+                        systems.append(ci)
+                    else:
+                        logger.debug(
+                            "CI directory %s exists but has no workflow files",
+                            subpath,
+                        )
             elif marker in root_names:
                 systems.append(ci)
         return systems
