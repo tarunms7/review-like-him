@@ -777,8 +777,16 @@ async def _run_comparison(
 
     owner, repo, pr_number = match.group(1), match.group(2), int(match.group(3))
 
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not token:
+        click.echo("Error: GITHUB_TOKEN or GH_TOKEN environment variable required", err=True)
+        return
+
     async with httpx.AsyncClient(
-        headers={"Accept": "application/vnd.github+json"},
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+        },
     ) as http_client:
         github_client = GitHubAPIClient(http_client)
         persona_store = PersonaStore()
@@ -1759,6 +1767,7 @@ jobs:
           key: persona-${{ hashFiles('.personas/**') }}
 
       - name: Run AI Review
+        id: review
         uses: your-org/review-like-him@v1
         with:
           persona: deepam
