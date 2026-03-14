@@ -20,10 +20,17 @@ def _read_pid() -> int | None:
         # Check if process is actually running
         os.kill(pid, 0)
         return pid
-    except (ValueError, ProcessLookupError, PermissionError):
-        # Stale PID file — clean up
+    except ValueError:
+        # Corrupt PID file — clean up
         PID_FILE.unlink(missing_ok=True)
         return None
+    except ProcessLookupError:
+        # Stale PID file — process no longer exists
+        PID_FILE.unlink(missing_ok=True)
+        return None
+    except PermissionError:
+        # Process exists but owned by another user
+        return pid
 
 
 def _write_pid(pid: int) -> None:
@@ -115,6 +122,7 @@ def _start_daemon(host: str, port: int) -> None:
     # Write stdout/stderr to log file
     log_file = LOG_DIR / "server.log"
 
+    log_fd = None
     try:
         log_fd = open(log_file, "a")  # noqa: SIM115
         proc = subprocess.Popen(
@@ -139,6 +147,9 @@ def _start_daemon(host: str, port: int) -> None:
     except Exception as exc:
         click.echo(click.style(f"Failed to start daemon: {exc}", fg="red"))
         raise SystemExit(1) from exc
+    finally:
+        if log_fd is not None:
+            log_fd.close()
 
 
 @server.command("stop")
