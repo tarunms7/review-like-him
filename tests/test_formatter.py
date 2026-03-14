@@ -97,7 +97,10 @@ class TestMarkdownFenceStripping:
         assert result.verdict == "approve"
 
     def test_json_in_plain_fence(self):
-        raw = '```\n{"verdict": "request_changes", "summary_sections": [], "inline_comments": []}\n```'
+        raw = (
+            '```\n{"verdict": "request_changes",'
+            ' "summary_sections": [], "inline_comments": []}\n```'
+        )
         result = self.formatter.format(raw, "a", "http://x")
         assert result.verdict == "request_changes"
 
