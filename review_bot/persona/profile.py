@@ -53,6 +53,13 @@ class PersonaProfile(BaseModel):
         default_factory=list,
         description="Manual override notes added by persona creator",
     )
+    smoothed_category_rates: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "EMA-smoothed approval rates per priority category. "
+            "Persisted across reanalysis runs to provide history for smoothing."
+        ),
+    )
     last_mined_at: str | None = Field(
         default=None,
         description=(
