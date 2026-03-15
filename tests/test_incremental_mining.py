@@ -464,7 +464,9 @@ class TestReviewsCache:
             result = store.load_reviews("broken")
 
         assert result == []
-        assert any("Corrupted" in r.message or "corrupted" in r.message.lower() for r in caplog.records)
+        assert any(
+            "corrupted" in r.message.lower() for r in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------
