@@ -78,7 +78,7 @@ async def _check_database(engine) -> CheckResult:
             detail=f"Connected (latency: {int(elapsed_ms)}ms)",
             duration_ms=elapsed_ms,
         )
-    except TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
         return CheckResult(
             status="fail",
