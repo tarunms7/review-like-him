@@ -87,6 +87,12 @@ class GitHubReviewMiner:
                 logger.warning("Rate limit near exhaustion, sleeping %d seconds", sleep_seconds)
                 await asyncio.sleep(sleep_seconds)
 
+            try:
+                from review_bot.github.rate_limits import RateLimitTracker
+
+                RateLimitTracker().update_from_response(url, response.headers)
+            except ImportError:
+                pass
             return response
 
         # Final attempt exhausted — return last response and let caller handle

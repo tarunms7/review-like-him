@@ -17,6 +17,7 @@ from review_bot.persona.store import PersonaStore
 from review_bot.server.health import router as health_router
 from review_bot.server.health import set_start_time
 from review_bot.server.queue import AsyncJobQueue
+from review_bot.server.status import router as status_router
 from review_bot.server.webhooks import configure, router
 
 logger = logging.getLogger("review-bot")
@@ -180,5 +181,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(router)
     app.include_router(health_router)
+    app.include_router(status_router)
 
     return app
