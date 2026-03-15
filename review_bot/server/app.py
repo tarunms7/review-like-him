@@ -16,8 +16,8 @@ from review_bot.github.app import GitHubAppAuth
 from review_bot.persona.store import PersonaStore
 from review_bot.server.health import router as health_router
 from review_bot.server.health import set_start_time
-from review_bot.server.status import router as status_router
 from review_bot.server.queue import AsyncJobQueue
+from review_bot.server.status import router as status_router
 from review_bot.server.webhooks import configure, router
 
 logger = logging.getLogger("review-bot")
