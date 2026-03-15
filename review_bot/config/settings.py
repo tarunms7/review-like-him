@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+from enum import IntEnum
 from pathlib import Path
 
 from pydantic import Field, field_validator
@@ -13,6 +14,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from review_bot.config.paths import CONFIG_DIR, DB_PATH
 
 logger = logging.getLogger("review-bot")
+
+
+class MinSeverity(IntEnum):
+    """Severity threshold levels for filtering review findings.
+
+    Attributes:
+        ALL: No filtering — show all findings.
+        LOW: Filter below low severity.
+        MEDIUM: Filter below medium severity.
+        HIGH: Filter below high severity.
+        CRITICAL: Only show critical findings.
+    """
+
+    ALL = 0
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    CRITICAL = 4
 
 
 class Settings(BaseSettings):
@@ -41,7 +60,31 @@ class Settings(BaseSettings):
         default=30,
         description="Seconds to wait for in-flight jobs to complete during shutdown",
     )
+    min_severity: int = Field(
+        default=0,
+        description="Minimum severity threshold for review findings (0=all, 4=critical only)",
+    )
+    feedback_poll_interval_hours: int = Field(
+        default=6,
+        description="Hours between feedback polling cycles",
+    )
 
+
+    @field_validator("min_severity")
+    @classmethod
+    def _validate_min_severity(cls, v: int) -> int:
+        """Min severity must be between 0 and 4 inclusive."""
+        if not (0 <= v <= 4):
+            raise ValueError("min_severity must be between 0 and 4")
+        return v
+
+    @field_validator("feedback_poll_interval_hours")
+    @classmethod
+    def _validate_feedback_poll_interval(cls, v: int) -> int:
+        """Feedback poll interval must be positive."""
+        if v < 1:
+            raise ValueError("feedback_poll_interval_hours must be >= 1")
+        return v
 
     @field_validator("github_app_id")
     @classmethod
