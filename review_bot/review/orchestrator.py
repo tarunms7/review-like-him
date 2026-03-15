@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from review_bot.config.repo_config import SEVERITY_TO_INT
+from review_bot.config.repo_config import RepoConfig, SEVERITY_TO_INT
 from review_bot.github.api import GitHubAPIClient
 from review_bot.persona.profile import PersonaProfile
 from review_bot.persona.store import PersonaStore
@@ -157,23 +157,42 @@ class ReviewOrchestrator:
         )
 
         # 3b. Load and resolve per-repo config
-        repo_config = await self._scanner.load_repo_config(owner, repo)
-        repo_config = repo_config.resolve_for_persona(persona_name)
-        logger.info(
-            "Repo config: min_severity=%s, max_comments=%d, skip_patterns=%s",
-            repo_config.min_severity,
-            repo_config.max_comments,
-            repo_config.skip_patterns,
-        )
+        repo_config_loaded = False
+        try:
+            repo_config = await self._scanner.load_repo_config(owner, repo)
+            repo_config = repo_config.resolve_for_persona(persona_name)
+            repo_config_loaded = True
+        except Exception:
+            logger.warning(
+                "Failed to load repo config for %s/%s, using defaults",
+                owner, repo,
+            )
+            repo_config = RepoConfig.default()
+
+        if repo_config_loaded:
+            logger.info(
+                "Repo config: min_severity=%s, max_comments=%d, skip_patterns=%s",
+                repo_config.min_severity,
+                repo_config.max_comments,
+                repo_config.skip_patterns,
+            )
 
         # 3c. Apply skip patterns to filter files and diff
         if repo_config.skip_patterns:
             files = self._filter_files(files, repo_config.skip_patterns)
             diff = self._filter_diff(diff, repo_config.skip_patterns)
 
-        # Determine effective severity: repo config takes precedence over global
-        effective_severity = SEVERITY_TO_INT.get(
-            repo_config.min_severity, self._min_severity
+        # Determine effective severity: use repo config if loaded, else global
+        if repo_config_loaded:
+            effective_severity = max(
+                SEVERITY_TO_INT.get(repo_config.min_severity, 0),
+                self._min_severity,
+            )
+        else:
+            effective_severity = self._min_severity
+        effective_severity = max(
+            effective_severity,
+            0,
         )
 
         # Handle large PRs (80+ files or huge diffs) — multi-pass chunked review
