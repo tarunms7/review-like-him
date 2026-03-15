@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -10,17 +11,27 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from review_bot.github.api import GitHubAPIClient
+from review_bot.persona.profile import PersonaProfile
 from review_bot.persona.store import PersonaStore
+from review_bot.review.chunker import DiffChunker
 from review_bot.review.formatter import ReviewFormatter, ReviewResult
 from review_bot.review.github_poster import ReviewPoster
-from review_bot.review.prompt_builder import PromptBuilder
-from review_bot.review.repo_scanner import RepoScanner
+from review_bot.review.merger import ChunkResultMerger
+from review_bot.review.prompt_builder import MAX_DIFF_CHARS, PromptBuilder
+from review_bot.review.repo_scanner import RepoContext, RepoScanner
 from review_bot.review.reviewer import ClaudeReviewer
+from review_bot.review.severity import filter_result_by_severity
 
 logger = logging.getLogger("review-bot")
 
+# PRs with more than this many files trigger multi-pass chunked review
+MULTI_PASS_THRESHOLD = 80
+
 # PRs with more than this many files get a summary-only review
-LARGE_PR_FILE_THRESHOLD = 500
+EXTREME_PR_THRESHOLD = 1000
+
+# Backward-compatible alias — kept for external consumers
+LARGE_PR_FILE_THRESHOLD: int = 500
 
 
 class ReviewOrchestrator:
@@ -35,10 +46,12 @@ class ReviewOrchestrator:
         github_client: GitHubAPIClient,
         persona_store: PersonaStore,
         db_engine: AsyncEngine | None = None,
+        min_severity: int = 0,
     ) -> None:
         self._github = github_client
         self._persona_store = persona_store
         self._db_engine = db_engine
+        self._min_severity = min_severity
         self._scanner = RepoScanner(github_client)
         self._prompt_builder = PromptBuilder()
         self._reviewer = ClaudeReviewer()
@@ -58,9 +71,9 @@ class ReviewOrchestrator:
         1. Load persona profile
         2. Fetch PR data and diff
         3. Scan repo conventions
-        4. Build prompt
+        4. Build prompt (or chunk for large PRs)
         5. Execute LLM review
-        6. Format output
+        6. Format output and apply severity filter
         7. Post review to GitHub
         8. Log to database
 
@@ -109,13 +122,13 @@ class ReviewOrchestrator:
             pr_data.get("deletions", 0),
         )
 
-        # Handle very large PRs
-        if len(files) > LARGE_PR_FILE_THRESHOLD:
+        # Handle extreme PRs (1000+ files) — summary only
+        if len(files) > EXTREME_PR_THRESHOLD:
             logger.warning(
-                "Large PR with %d files, posting summary comment",
+                "Extreme PR with %d files, posting summary comment",
                 len(files),
             )
-            result = await self._handle_large_pr(
+            result = await self._handle_extreme_pr(
                 owner,
                 repo,
                 pr_number,
@@ -142,25 +155,53 @@ class ReviewOrchestrator:
             repo_context.frameworks,
         )
 
-        # 4. Build prompt
-        prompt = self._prompt_builder.build(
-            persona=persona,
-            repo_context=repo_context,
-            pr_data=pr_data,
-            diff=diff,
-            files=files,
+        # Determine effective severity from repo config or global default
+        effective_severity = repo_context.repo_config.get(
+            "min_severity", self._min_severity
         )
 
-        # 5. Execute LLM review
-        logger.info("Executing Claude review...")
-        raw_output = await self._reviewer.review(prompt)
+        # Handle large PRs (80+ files or huge diffs) — multi-pass chunked review
+        if len(files) > MULTI_PASS_THRESHOLD or len(diff) > MAX_DIFF_CHARS * 2:
+            logger.info(
+                "Large PR with %d files (%d chars diff), using multi-pass review",
+                len(files),
+                len(diff),
+            )
+            result = await self._handle_large_pr_multipass(
+                owner,
+                repo,
+                pr_number,
+                persona,
+                pr_data,
+                files,
+                diff,
+                repo_context,
+                pr_url,
+            )
+        else:
+            # 4. Build prompt
+            prompt = self._prompt_builder.build(
+                persona=persona,
+                repo_context=repo_context,
+                pr_data=pr_data,
+                diff=diff,
+                files=files,
+            )
 
-        # 6. Format output
-        result = self._formatter.format(
-            raw_output=raw_output,
-            persona_name=persona_name,
-            pr_url=pr_url,
-        )
+            # 5. Execute LLM review
+            logger.info("Executing Claude review...")
+            raw_output = await self._reviewer.review(prompt)
+
+            # 6. Format output
+            result = self._formatter.format(
+                raw_output=raw_output,
+                persona_name=persona_name,
+                pr_url=pr_url,
+            )
+
+        # 6b. Apply severity filter if configured
+        if effective_severity > 0:
+            result = filter_result_by_severity(result, effective_severity)
 
         # 7. Post review to GitHub
         try:
@@ -210,39 +251,37 @@ class ReviewOrchestrator:
         owner, repo, pr_number = self._parse_pr_url(pr_url)
         return await self.run_review(owner, repo, pr_number, persona_name)
 
-    async def _handle_large_pr(
+    async def _handle_extreme_pr(
         self,
         owner: str,
         repo: str,
         pr_number: int,
-        persona: object,
+        persona: PersonaProfile,
         pr_data: dict,
         files: list,
         pr_url: str,
     ) -> ReviewResult:
-        """Handle PRs with 500+ files by posting a summary comment."""
-        file_summary = (
-            f"This PR has {len(files)} files — too large for a "
-            f"detailed line-by-line review. Here's a high-level summary:"
-        )
-
+        """Handle PRs with 1000+ files by posting a persona-aware summary comment."""
         added = sum(1 for f in files if f.status == "added")
         modified = sum(1 for f in files if f.status == "modified")
         removed = sum(1 for f in files if f.status == "removed")
 
+        tone_note = f" (tone: {persona.tone})" if persona.tone else ""
         summary = (
-            f"{file_summary}\n\n"
+            f"**{persona.name}**{tone_note} here — this PR has **{len(files)} files**, "
+            f"which is too large for a detailed line-by-line review.\n\n"
+            f"### File breakdown\n"
             f"- **{added}** files added\n"
             f"- **{modified}** files modified\n"
             f"- **{removed}** files removed\n\n"
-            f"Consider breaking this into smaller PRs for better review."
+            f"Consider breaking this into smaller PRs for better review coverage."
         )
 
         result = ReviewResult(
             verdict="comment",
             summary_sections=[],
             inline_comments=[],
-            persona_name=persona.name if hasattr(persona, "name") else "",
+            persona_name=persona.name,
             pr_url=pr_url,
         )
 
@@ -257,6 +296,128 @@ class ReviewOrchestrator:
             logger.error("Failed to post large PR comment: %s", exc)
 
         return result
+
+    async def _handle_large_pr_multipass(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        persona: PersonaProfile,
+        pr_data: dict,
+        files: list,
+        diff: str,
+        repo_context: RepoContext,
+        pr_url: str,
+    ) -> ReviewResult:
+        """Handle large PRs using multi-pass chunked review.
+
+        Chunks the diff, builds a prompt per chunk, reviews concurrently,
+        and merges results.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            pr_number: Pull request number.
+            persona: Loaded persona profile.
+            pr_data: Raw PR data from GitHub API.
+            files: List of changed PR files.
+            diff: Full unified diff text.
+            repo_context: Detected repo conventions.
+            pr_url: Full GitHub PR URL.
+
+        Returns:
+            Merged ReviewResult from all chunks.
+        """
+        chunker = DiffChunker()
+        chunking_result = chunker.chunk(diff, files)
+
+        if not chunking_result.chunks:
+            logger.warning("No reviewable chunks after filtering")
+            return ReviewResult(
+                verdict="comment",
+                summary_sections=[],
+                inline_comments=[],
+                persona_name=persona.name,
+                pr_url=pr_url,
+            )
+
+        logger.info(
+            "Chunked PR into %d chunks (%d files skipped)",
+            len(chunking_result.chunks),
+            len(chunking_result.skipped_files),
+        )
+
+        # Single chunk after partitioning — skip cross-chunk context,
+        # use normal single-pass flow instead.
+        if len(chunking_result.chunks) == 1:
+            logger.info("Single chunk after partitioning, using single-pass flow")
+            prompt = self._prompt_builder.build(
+                persona=persona,
+                repo_context=repo_context,
+                pr_data=pr_data,
+                diff=chunking_result.chunks[0].diff_text,
+                files=chunking_result.chunks[0].files,
+            )
+            raw_output = await self._reviewer.review(prompt)
+            return self._formatter.format(
+                raw_output=raw_output,
+                persona_name=persona.name,
+                pr_url=pr_url,
+            )
+
+        # Build prompts for each chunk
+        prompts: list[str] = []
+        for chunk in chunking_result.chunks:
+            prompt = self._prompt_builder.build_chunked(
+                persona=persona,
+                repo_context=repo_context,
+                pr_data=pr_data,
+                chunk=chunk,
+                all_chunks=chunking_result.chunks,
+            )
+            prompts.append(prompt)
+
+        # Review all chunks concurrently (max 3 at a time)
+        raw_outputs = await self._review_chunks_concurrent(prompts, max_concurrent=3)
+
+        # Format each chunk's output
+        chunk_results: list[ReviewResult] = []
+        chunk_labels: list[str] = []
+        for i, raw_output in enumerate(raw_outputs):
+            formatted = self._formatter.format(
+                raw_output=raw_output,
+                persona_name=persona.name,
+                pr_url=pr_url,
+            )
+            chunk_results.append(formatted)
+            chunk_labels.append(chunking_result.chunks[i].label)
+
+        # Merge all chunk results
+        merger = ChunkResultMerger()
+        return merger.merge(chunk_results, chunk_labels)
+
+    async def _review_chunks_concurrent(
+        self,
+        prompts: list[str],
+        max_concurrent: int = 3,
+    ) -> list[str]:
+        """Review multiple chunks concurrently with a semaphore limit.
+
+        Args:
+            prompts: List of prompt strings, one per chunk.
+            max_concurrent: Maximum number of concurrent reviews.
+
+        Returns:
+            List of raw LLM output strings, in the same order as prompts.
+        """
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def _review_one(prompt: str) -> str:
+            async with semaphore:
+                return await self._reviewer.review(prompt)
+
+        tasks = [_review_one(p) for p in prompts]
+        return list(await asyncio.gather(*tasks))
 
     @staticmethod
     def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:

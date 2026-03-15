@@ -20,15 +20,56 @@ CATEGORY_EMOJIS: dict[str, str] = {
     "Performance": "⚡",
 }
 
+# Confidence level → emoji prefix for display
+CONFIDENCE_PREFIXES: dict[str, str] = {
+    "high": "🔴",
+    "medium": "🟡",
+    "low": "⚪",
+}
+
+# Mapping of LLM variations to canonical confidence levels
+_CONFIDENCE_ALIASES: dict[str, str] = {
+    "very high": "high",
+    "very_high": "high",
+    "critical": "high",
+    "certain": "high",
+    "confident": "high",
+    "high": "high",
+    "moderate": "medium",
+    "medium": "medium",
+    "normal": "medium",
+    "low": "low",
+    "uncertain": "low",
+    "very low": "low",
+    "very_low": "low",
+    "unsure": "low",
+    "guess": "low",
+    "none": "low",
+}
+
+
+class Finding(BaseModel):
+    """A single review finding with confidence metadata."""
+
+    text: str = Field(description="The finding description text")
+    confidence: str = Field(
+        default="medium",
+        description="Confidence level: 'high', 'medium', or 'low'",
+    )
+    confidence_reason: str = Field(
+        default="",
+        description="Explanation for the confidence rating",
+    )
+
 
 class CategorySection(BaseModel):
     """A categorized section of review findings with emoji prefix."""
 
     emoji: str = Field(description="Section emoji prefix")
     title: str = Field(description="Section title")
-    findings: list[str] = Field(
+    findings: list[Finding] = Field(
         default_factory=list,
-        description="List of finding descriptions",
+        description="List of Finding objects",
     )
 
 
@@ -38,6 +79,14 @@ class InlineComment(BaseModel):
     file: str = Field(description="File path relative to repo root")
     line: int = Field(description="Line number in the diff")
     body: str = Field(description="Comment text")
+    confidence: str = Field(
+        default="medium",
+        description="Confidence level: 'high', 'medium', or 'low'",
+    )
+    confidence_reason: str = Field(
+        default="",
+        description="Explanation for the confidence rating",
+    )
 
 
 class ReviewResult(BaseModel):
@@ -85,7 +134,7 @@ class ReviewFormatter:
                 CategorySection(
                     emoji="🐛",
                     title="Bugs",
-                    findings=[raw_output.strip()],
+                    findings=[Finding(text=raw_output.strip())],
                 ),
             ],
             inline_comments=[],
@@ -101,7 +150,7 @@ class ReviewFormatter:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            pass
+            logger.warning("Direct JSON parse failed, trying code fence extraction")
 
         # Try extracting from markdown code fences
         fence_match = re.search(
@@ -113,7 +162,7 @@ class ReviewFormatter:
             try:
                 return json.loads(fence_match.group(1))
             except json.JSONDecodeError:
-                pass
+                logger.warning("JSON parse from code fence failed, trying brace extraction")
 
         # Try finding a JSON object anywhere in the text
         brace_match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -121,9 +170,47 @@ class ReviewFormatter:
             try:
                 return json.loads(brace_match.group(0))
             except json.JSONDecodeError:
-                pass
+                logger.warning("JSON parse from brace extraction failed")
 
         return None
+
+    @staticmethod
+    def _normalize_confidence(value: str) -> str:
+        """Normalize LLM confidence variations to canonical levels.
+
+        Args:
+            value: Raw confidence string from LLM output.
+
+        Returns:
+            One of 'high', 'medium', or 'low'. Defaults to 'medium'
+            for unrecognized values.
+        """
+        if not isinstance(value, str) or not value.strip():
+            return "medium"
+        return _CONFIDENCE_ALIASES.get(value.strip().lower(), "medium")
+
+    @staticmethod
+    def _parse_finding(item: str | dict) -> Finding:
+        """Parse a single finding from either old format (str) or new format (dict).
+
+        Args:
+            item: Either a plain string or a dict with text/confidence/confidence_reason.
+
+        Returns:
+            A Finding instance with normalized confidence.
+        """
+        if isinstance(item, str):
+            return Finding(text=item)
+        if isinstance(item, dict):
+            confidence = ReviewFormatter._normalize_confidence(
+                item.get("confidence", "medium"),
+            )
+            return Finding(
+                text=item.get("text", ""),
+                confidence=confidence,
+                confidence_reason=item.get("confidence_reason", ""),
+            )
+        return Finding(text=str(item))
 
     def _from_json(
         self,
@@ -143,7 +230,8 @@ class ReviewFormatter:
                 "emoji",
                 CATEGORY_EMOJIS.get(title, "📝"),
             )
-            findings = section_data.get("findings", [])
+            raw_findings = section_data.get("findings", [])
+            findings = [self._parse_finding(f) for f in raw_findings]
             if findings:
                 sections.append(
                     CategorySection(
@@ -155,11 +243,16 @@ class ReviewFormatter:
 
         inline_comments: list[InlineComment] = []
         for comment_data in data.get("inline_comments", []):
+            confidence = self._normalize_confidence(
+                comment_data.get("confidence", "medium"),
+            )
             inline_comments.append(
                 InlineComment(
                     file=comment_data.get("file", ""),
                     line=comment_data.get("line", 0),
                     body=comment_data.get("body", ""),
+                    confidence=confidence,
+                    confidence_reason=comment_data.get("confidence_reason", ""),
                 )
             )
 

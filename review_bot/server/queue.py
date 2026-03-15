@@ -59,6 +59,39 @@ class AsyncJobQueue:
         self._github_auth = github_auth
         self._persona_store = persona_store
         self._worker_task: asyncio.Task | None = None
+        self._current_job_id: str | None = None
+
+    @property
+    def queue_depth(self) -> int:
+        """Return the current number of queued jobs.
+
+        Returns:
+            Number of jobs waiting in the queue.
+        """
+        return self._queue.qsize()
+
+    @property
+    def worker_status(self) -> str:
+        """Return the current worker status.
+
+        Returns:
+            'running' if worker task is active, 'stopped' if None,
+            'dead' if the task has completed unexpectedly.
+        """
+        if self._worker_task is None:
+            return "stopped"
+        if self._worker_task.done():
+            return "dead"
+        return "running"
+
+    @property
+    def current_job_id(self) -> str | None:
+        """Return the ID of the currently processing job.
+
+        Returns:
+            Job ID string or None if idle.
+        """
+        return self._current_job_id
 
     async def enqueue(self, job: ReviewJob) -> str:
         """Add a review job to the queue and persist status.
@@ -101,74 +134,80 @@ class AsyncJobQueue:
                 await self._process_job(job)
                 self._queue.task_done()
             except asyncio.CancelledError:
+                logger.debug("Worker loop cancelled")
                 raise
             except Exception:
                 logger.exception("Unexpected error in worker loop")
 
     async def _process_job(self, job: ReviewJob) -> None:
         """Process a single review job."""
-        job.status = "running"
-        job.started_at = datetime.now(tz=UTC).isoformat()
-        await self._update_job_status(job)
-
-        logger.info(
-            "Processing job %s: %s/%s#%d as '%s'",
-            job.id,
-            job.owner,
-            job.repo,
-            job.pr_number,
-            job.persona_name,
-        )
-
+        self._current_job_id = job.id
         try:
-            http_client = await self._github_auth.create_token_client(
-                job.installation_id,
+            job.status = "running"
+            job.started_at = datetime.now(tz=UTC).isoformat()
+            await self._update_job_status(job)
+
+            logger.info(
+                "Processing job %s: %s/%s#%d as '%s'",
+                job.id,
+                job.owner,
+                job.repo,
+                job.pr_number,
+                job.persona_name,
             )
-            try:
-                github_client = GitHubAPIClient(http_client)
-                orchestrator = ReviewOrchestrator(
-                    github_client=github_client,
-                    persona_store=self._persona_store,
-                    db_engine=self._db_engine,
-                )
-                await orchestrator.run_review(
-                    owner=job.owner,
-                    repo=job.repo,
-                    pr_number=job.pr_number,
-                    persona_name=job.persona_name,
-                )
-            finally:
-                await http_client.aclose()
 
-            job.status = "completed"
-            job.completed_at = datetime.now(tz=UTC).isoformat()
-            logger.info("Job %s completed successfully", job.id)
-
-        except Exception as exc:
-            job.status = "failed"
-            job.completed_at = datetime.now(tz=UTC).isoformat()
-            job.error_message = str(exc)
-            logger.error("Job %s failed: %s", job.id, exc)
-
-            # Try to post error comment on the PR
             try:
                 http_client = await self._github_auth.create_token_client(
                     job.installation_id,
                 )
                 try:
                     github_client = GitHubAPIClient(http_client)
-                    await github_client.post_comment(
-                        job.owner,
-                        job.repo,
-                        job.pr_number,
-                        f"Review failed for persona '{job.persona_name}': {exc}",
+                    orchestrator = ReviewOrchestrator(
+                        github_client=github_client,
+                        persona_store=self._persona_store,
+                        db_engine=self._db_engine,
+                    )
+                    await orchestrator.run_review(
+                        owner=job.owner,
+                        repo=job.repo,
+                        pr_number=job.pr_number,
+                        persona_name=job.persona_name,
                     )
                 finally:
                     await http_client.aclose()
-            except Exception:
-                logger.exception("Failed to post error comment for job %s", job.id)
 
-        await self._update_job_status(job)
+                job.status = "completed"
+                job.completed_at = datetime.now(tz=UTC).isoformat()
+                logger.info("Job %s completed successfully", job.id)
+
+            except Exception as exc:
+                job.status = "failed"
+                job.completed_at = datetime.now(tz=UTC).isoformat()
+                job.error_message = str(exc)
+                logger.error("Job %s failed: %s", job.id, exc)
+
+                # Try to post error comment on the PR
+                try:
+                    http_client = await self._github_auth.create_token_client(
+                        job.installation_id,
+                    )
+                    try:
+                        github_client = GitHubAPIClient(http_client)
+                        await github_client.post_comment(
+                            job.owner,
+                            job.repo,
+                            job.pr_number,
+                            f"⚠️ Review by **{job.persona_name}** could not be completed. "
+                            f"The team has been notified. Please try again later.",
+                        )
+                    finally:
+                        await http_client.aclose()
+                except Exception:
+                    logger.exception("Failed to post error comment for job %s", job.id)
+
+            await self._update_job_status(job)
+        finally:
+            self._current_job_id = None
 
     async def _persist_job(self, job: ReviewJob) -> None:
         """Insert a new job record into the database."""

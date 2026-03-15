@@ -31,7 +31,12 @@ review-bot = "review_bot.cli.main:cli"
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "respx>=0.21",
     "ruff>=0.3",
+]
+postgresql = [
+    "asyncpg>=0.29",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -52,5 +57,7 @@ testpaths = ["tests"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "respx>=0.21",
     "ruff>=0.3",
 ]

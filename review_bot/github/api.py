@@ -58,6 +58,7 @@ class GitHubAPIClient:
         """Make an HTTP request with exponential backoff on rate limits and errors."""
         backoff = INITIAL_BACKOFF
         last_exc: Exception | None = None
+        resp: httpx.Response | None = None
 
         for attempt in range(MAX_RETRIES):
             try:
@@ -93,6 +94,12 @@ class GitHubAPIClient:
                     continue
 
                 resp.raise_for_status()
+                try:
+                    from review_bot.github.rate_limits import RateLimitTracker
+
+                    RateLimitTracker().update_from_response(url, resp.headers)
+                except ImportError:
+                    pass
                 return resp
 
             except httpx.TransportError as exc:
@@ -107,10 +114,13 @@ class GitHubAPIClient:
                     await asyncio.sleep(backoff)
                     backoff *= 2
 
+        # resp is always defined after at least one loop iteration, but
+        # initialize a fallback for type-safety in case of unexpected paths.
+        fallback_resp = httpx.Response(500)
         raise httpx.HTTPStatusError(
             f"Request failed after {MAX_RETRIES} retries",
             request=httpx.Request(method, url),
-            response=resp if "resp" in locals() else httpx.Response(500),  # type: ignore[possibly-undefined]
+            response=resp if resp is not None else fallback_resp,
         ) from last_exc
 
     async def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict:

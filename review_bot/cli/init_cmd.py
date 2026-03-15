@@ -8,7 +8,10 @@ import subprocess
 import click
 import yaml
 
-from review_bot.config.paths import CONFIG_DIR, CONFIG_FILE
+from review_bot.config.paths import CONFIG_DIR, CONFIG_FILE, ensure_directories
+
+# Timeout in seconds for subprocess calls
+_SUBPROCESS_TIMEOUT = 15
 
 
 def _detect_webhook_url() -> str | None:
@@ -38,6 +41,14 @@ def init_cmd() -> None:
     """Interactive setup wizard for review-bot."""
     click.echo(click.style("\n🤖 review-bot Setup Wizard\n", fg="cyan", bold=True))
 
+    # Ensure directories exist first
+    try:
+        ensure_directories()
+    except OSError as exc:
+        click.echo(click.style(f"Failed to create config directories: {exc}", fg="red"))
+        click.echo(f"Ensure you have write permissions to {CONFIG_DIR}")
+        raise SystemExit(1) from exc
+
     # Step 1: Check claude CLI
     click.echo("Checking prerequisites...")
     if _check_claude_cli():
@@ -45,6 +56,7 @@ def init_cmd() -> None:
     else:
         click.echo(click.style("  ✗ claude CLI not found", fg="red"))
         click.echo("    Install it from https://claude.ai/download")
+        click.echo("    The claude CLI is required for AI-powered code reviews.")
         if not click.confirm("Continue anyway?", default=False):
             raise SystemExit(1)
 
@@ -54,14 +66,32 @@ def init_cmd() -> None:
             ["claude", "--version"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_SUBPROCESS_TIMEOUT,
         )
         if result.returncode == 0:
             click.echo(
                 click.style(f"  ✓ claude CLI version: {result.stdout.strip()}", fg="green")
             )
-    except Exception:
-        click.echo(click.style("  ⚠ Could not verify claude CLI", fg="yellow"))
+        else:
+            click.echo(
+                click.style(
+                    f"  ⚠ claude CLI returned exit code {result.returncode}",
+                    fg="yellow",
+                )
+            )
+            if result.stderr.strip():
+                click.echo(f"    stderr: {result.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        click.echo(
+            click.style(
+                f"  ⚠ claude CLI version check timed out after {_SUBPROCESS_TIMEOUT}s",
+                fg="yellow",
+            )
+        )
+    except FileNotFoundError:
+        click.echo(click.style("  ⚠ claude CLI not found in PATH", fg="yellow"))
+    except Exception as exc:
+        click.echo(click.style(f"  ⚠ Could not verify claude CLI: {exc}", fg="yellow"))
 
     # Step 2: GitHub App setup
     click.echo(click.style("\n--- GitHub App Setup ---\n", fg="cyan"))
@@ -85,7 +115,6 @@ def init_cmd() -> None:
         )
 
     # Step 4: Save config
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config = {
         "github_app_id": app_info["app_id"],
         "private_key_path": app_info["private_key_path"],
@@ -100,3 +129,6 @@ def init_cmd() -> None:
 
     click.echo(click.style(f"\n  ✓ Config saved to {CONFIG_FILE}", fg="green"))
     click.echo(click.style("\n✓ Setup complete.", fg="green", bold=True))
+    click.echo("\nNext steps:")
+    click.echo("  1. Create a persona: review-bot persona create <name> --github-user <user>")
+    click.echo("  2. Start the server: review-bot server start")
