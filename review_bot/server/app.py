@@ -14,6 +14,8 @@ from review_bot.config.paths import ensure_directories
 from review_bot.config.settings import Settings
 from review_bot.github.app import GitHubAppAuth
 from review_bot.persona.store import PersonaStore
+from review_bot.server.health import router as health_router
+from review_bot.server.health import set_start_time
 from review_bot.server.queue import AsyncJobQueue
 from review_bot.server.webhooks import configure, router
 
@@ -136,6 +138,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await job_queue.start_worker()
 
+        # Initialize rate limit tracker placeholder (task-2 wires into API client)
+        rate_limit_tracker = None
+        try:
+            from review_bot.github.rate_limits import RateLimitTracker
+
+            rate_limit_tracker = RateLimitTracker()
+        except ImportError:
+            logger.debug("RateLimitTracker not yet available, using None placeholder")
+
         # Configure webhook module with runtime dependencies
         configure(
             job_queue=job_queue,
@@ -143,11 +154,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             persona_store=persona_store,
         )
 
+        # Record app start time for uptime calculation
+        set_start_time()
+
         # Store on app state for access in tests/extensions
         app.state.db_engine = engine
         app.state.job_queue = job_queue
         app.state.github_auth = github_auth
         app.state.persona_store = persona_store
+        app.state.rate_limit_tracker = rate_limit_tracker
 
         yield
 
@@ -164,5 +179,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.include_router(router)
+    app.include_router(health_router)
 
     return app

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -71,3 +72,48 @@ class PersonaStore:
     def exists(self, name: str) -> bool:
         """Check if a persona profile exists."""
         return self._path_for(name).exists()
+
+    def _reviews_path_for(self, name: str) -> Path:
+        """Return the file path for cached reviews by persona name.
+
+        Args:
+            name: Persona name slug.
+
+        Returns:
+            Path to the reviews JSON file.
+        """
+        return self._dir / f"{name}_reviews.json"
+
+    def save_reviews(self, name: str, reviews: list[dict]) -> None:
+        """Save mined reviews to a JSON cache file.
+
+        Args:
+            name: Persona name slug.
+            reviews: List of review comment dicts to cache.
+        """
+        self._ensure_dir()
+        path = self._reviews_path_for(name)
+        path.write_text(json.dumps(reviews, indent=2), encoding="utf-8")
+        logger.info("Saved %d reviews for persona '%s' to %s", len(reviews), name, path)
+
+    def load_reviews(self, name: str) -> list[dict]:
+        """Load cached reviews for a persona.
+
+        Args:
+            name: Persona name slug.
+
+        Returns:
+            List of review comment dicts, or [] if file not found or corrupt.
+        """
+        path = self._reviews_path_for(name)
+        if not path.exists():
+            return []
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            logger.warning(
+                "Corrupted reviews cache for '%s' at %s, returning empty list",
+                name,
+                path,
+            )
+            return []

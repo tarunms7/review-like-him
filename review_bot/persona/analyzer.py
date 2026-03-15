@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 
@@ -103,6 +103,39 @@ class PersonaAnalyzer:
             ),
             overrides=[],
         )
+
+    async def analyze_incremental(
+        self,
+        existing_profile: PersonaProfile,
+        new_weighted_reviews: list[dict],
+        all_weighted_reviews: list[dict],
+    ) -> PersonaProfile:
+        """Re-analyze all reviews and produce an updated PersonaProfile.
+
+        Calls analyze() on the full set of weighted reviews, then preserves
+        manual overrides from the existing profile.
+
+        Args:
+            existing_profile: The current persona profile with overrides to keep.
+            new_weighted_reviews: Only the newly mined weighted reviews (unused
+                directly but available for future delta-only analysis).
+            all_weighted_reviews: Full merged set of weighted reviews to analyze.
+
+        Returns:
+            Updated PersonaProfile with preserved overrides and new timestamps.
+        """
+        profile = await self.analyze(
+            all_weighted_reviews,
+            existing_profile.github_user,
+            existing_profile.name,
+        )
+        profile.overrides = existing_profile.overrides
+        profile.last_mined_at = datetime.now(UTC).isoformat()
+        repos = {r.get("repo", "") for r in all_weighted_reviews if r.get("repo")}
+        profile.mined_from = (
+            f"{len(all_weighted_reviews)} comments across {len(repos)} repos"
+        )
+        return profile
 
     def _parse_llm_response(self, text: str) -> dict:
         """Extract JSON from LLM response text, handling markdown fences."""

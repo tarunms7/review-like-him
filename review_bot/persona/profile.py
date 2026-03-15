@@ -53,6 +53,13 @@ class PersonaProfile(BaseModel):
         default_factory=list,
         description="Manual override notes added by persona creator",
     )
+    last_mined_at: str | None = Field(
+        default=None,
+        description=(
+            "ISO 8601 timestamp of the last successful mining run. "
+            "Used by incremental mining to skip already-processed reviews."
+        ),
+    )
 
     def to_yaml(self) -> str:
         """Serialize the profile to a YAML string."""

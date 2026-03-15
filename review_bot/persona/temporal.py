@@ -37,6 +37,8 @@ def apply_weights(comments: list[dict]) -> list[dict]:
         created_at = entry["created_at"]
         if isinstance(created_at, str):
             created_at = datetime.fromisoformat(created_at)
-        entry["weight"] = weight_comment(created_at)
+        temporal_w = weight_comment(created_at)
+        dedup_w = entry.get("dedup_weight", 1.0)
+        entry["weight"] = temporal_w * dedup_w
         weighted.append(entry)
     return weighted
