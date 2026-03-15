@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
 
 from review_bot.persona.profile import PersonaProfile, Priority, SeverityPattern
 
@@ -94,7 +94,16 @@ class PersonaAnalyzer:
             prompt=prompt,
             options=ClaudeAgentOptions(max_turns=1),
         ):
-            if isinstance(message, AssistantMessage):
+            if isinstance(message, ResultMessage):
+                if message.result:
+                    result_text = message.result
+                if message.is_error:
+                    raise RuntimeError(
+                        f"Claude returned an error (stop_reason={message.stop_reason})"
+                    )
+            elif isinstance(message, AssistantMessage):
+                if message.error:
+                    raise RuntimeError(f"Claude error: {message.error}")
                 for block in message.content:
                     if hasattr(block, "text"):
                         result_text += block.text

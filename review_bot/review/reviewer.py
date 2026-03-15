@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
 
 logger = logging.getLogger("review-bot")
 
@@ -79,7 +79,17 @@ class ClaudeReviewer:
             prompt=prompt,
             options=ClaudeAgentOptions(max_turns=1),
         ):
-            if isinstance(message, AssistantMessage):
+            if isinstance(message, ResultMessage):
+                # ResultMessage.result contains the final text output
+                if message.result:
+                    result_text = message.result
+                if message.is_error:
+                    raise RuntimeError(
+                        f"Claude returned an error (stop_reason={message.stop_reason})"
+                    )
+            elif isinstance(message, AssistantMessage):
+                if message.error:
+                    raise RuntimeError(f"Claude error: {message.error}")
                 for block in message.content:
                     if hasattr(block, "text"):
                         result_text += block.text
