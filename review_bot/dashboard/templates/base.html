@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Dashboard{% endblock %} — review-bot</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="container-fluid">
+        <ul>
+            <li><strong>review-bot</strong></li>
+        </ul>
+        <ul>
+            <li><a href="/dashboard/">Overview</a></li>
+            <li><a href="/dashboard/activity">Activity</a></li>
+            <li><a href="/dashboard/personas">Personas</a></li>
+            <li><a href="/dashboard/queue">Queue</a></li>
+            <li><a href="/dashboard/config">Config</a></li>
+        </ul>
+    </nav>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="container">
+        <small>review-bot dashboard</small>
+    </footer>
+</body>
+</html>

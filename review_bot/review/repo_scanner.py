@@ -8,6 +8,7 @@ import re
 import httpx
 from pydantic import BaseModel, Field
 
+from review_bot.config.repo_config import RepoConfig
 from review_bot.github.api import GitHubAPIClient
 
 logger = logging.getLogger("review-bot")
@@ -990,6 +991,31 @@ class RepoScanner:
     # ------------------------------------------------------------------
     # Repo config reader
     # ------------------------------------------------------------------
+
+    async def load_repo_config(self, owner: str, repo: str) -> RepoConfig:
+        """Load and validate per-repo review config from .review-like-him.yml.
+
+        Returns RepoConfig.default() on 404, malformed YAML, or any error.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+
+        Returns:
+            Validated RepoConfig instance, or default on failure.
+        """
+        content = await self._read_file(owner, repo, ".review-like-him.yml")
+        if content is None:
+            return RepoConfig.default()
+
+        try:
+            return RepoConfig.from_yaml(content)
+        except Exception:
+            logger.warning(
+                "Failed to parse .review-like-him.yml in %s/%s, using defaults",
+                owner, repo, exc_info=True,
+            )
+            return RepoConfig.default()
 
     async def _read_repo_config(
         self,

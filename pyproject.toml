@@ -23,6 +23,7 @@ dependencies = [
     "cryptography>=42.0",
     "claude-agent-sdk>=0.1",
     "rich>=13.0",
+    "jinja2>=3.1",
 ]
 
 [project.scripts]
@@ -46,6 +47,8 @@ packages = ["review_bot"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+force-exclude = true
+extend-exclude = ["review_bot/dashboard/static", "review_bot/dashboard/templates"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from review_bot.config.repo_config import SEVERITY_TO_INT, RepoConfig
 from review_bot.github.api import GitHubAPIClient
 from review_bot.persona.profile import PersonaProfile
 from review_bot.persona.store import PersonaStore
@@ -155,9 +156,43 @@ class ReviewOrchestrator:
             repo_context.frameworks,
         )
 
-        # Determine effective severity from repo config or global default
-        effective_severity = repo_context.repo_config.get(
-            "min_severity", self._min_severity
+        # 3b. Load and resolve per-repo config
+        repo_config_loaded = False
+        try:
+            repo_config = await self._scanner.load_repo_config(owner, repo)
+            repo_config = repo_config.resolve_for_persona(persona_name)
+            repo_config_loaded = True
+        except Exception:
+            logger.warning(
+                "Failed to load repo config for %s/%s, using defaults",
+                owner, repo,
+            )
+            repo_config = RepoConfig.default()
+
+        if repo_config_loaded:
+            logger.info(
+                "Repo config: min_severity=%s, max_comments=%d, skip_patterns=%s",
+                repo_config.min_severity,
+                repo_config.max_comments,
+                repo_config.skip_patterns,
+            )
+
+        # 3c. Apply skip patterns to filter files and diff
+        if repo_config.skip_patterns:
+            files = self._filter_files(files, repo_config.skip_patterns)
+            diff = self._filter_diff(diff, repo_config.skip_patterns)
+
+        # Determine effective severity: use repo config if loaded, else global
+        if repo_config_loaded:
+            effective_severity = max(
+                SEVERITY_TO_INT.get(repo_config.min_severity, 0),
+                self._min_severity,
+            )
+        else:
+            effective_severity = self._min_severity
+        effective_severity = max(
+            effective_severity,
+            0,
         )
 
         # Handle large PRs (80+ files or huge diffs) — multi-pass chunked review
@@ -177,6 +212,7 @@ class ReviewOrchestrator:
                 diff,
                 repo_context,
                 pr_url,
+                custom_instructions=repo_config.custom_instructions,
             )
         else:
             # 4. Build prompt
@@ -186,6 +222,7 @@ class ReviewOrchestrator:
                 pr_data=pr_data,
                 diff=diff,
                 files=files,
+                custom_instructions=repo_config.custom_instructions,
             )
 
             # 5. Execute LLM review
@@ -202,6 +239,9 @@ class ReviewOrchestrator:
         # 6b. Apply severity filter if configured
         if effective_severity > 0:
             result = filter_result_by_severity(result, effective_severity)
+
+        # 6c. Apply max comments limit
+        result = self._apply_comment_limit(result, repo_config.max_comments)
 
         # 7. Post review to GitHub
         try:
@@ -308,6 +348,7 @@ class ReviewOrchestrator:
         diff: str,
         repo_context: RepoContext,
         pr_url: str,
+        custom_instructions: str = "",
     ) -> ReviewResult:
         """Handle large PRs using multi-pass chunked review.
 
@@ -357,6 +398,7 @@ class ReviewOrchestrator:
                 pr_data=pr_data,
                 diff=chunking_result.chunks[0].diff_text,
                 files=chunking_result.chunks[0].files,
+                custom_instructions=custom_instructions,
             )
             raw_output = await self._reviewer.review(prompt)
             return self._formatter.format(
@@ -374,6 +416,7 @@ class ReviewOrchestrator:
                 pr_data=pr_data,
                 chunk=chunk,
                 all_chunks=chunking_result.chunks,
+                custom_instructions=custom_instructions,
             )
             prompts.append(prompt)
 
@@ -395,6 +438,82 @@ class ReviewOrchestrator:
         # Merge all chunk results
         merger = ChunkResultMerger()
         return merger.merge(chunk_results, chunk_labels)
+
+    @staticmethod
+    def _filter_files(
+        files: list,
+        skip_patterns: list[str],
+    ) -> list:
+        """Filter out files matching any skip pattern using fnmatch.
+
+        Args:
+            files: List of PullRequestFile objects.
+            skip_patterns: Glob patterns to skip.
+
+        Returns:
+            Filtered list of files.
+        """
+        from fnmatch import fnmatch
+
+        return [
+            f for f in files
+            if not any(fnmatch(f.filename, pat) for pat in skip_patterns)
+        ]
+
+    @staticmethod
+    def _filter_diff(diff: str, skip_patterns: list[str]) -> str:
+        """Remove diff sections for files matching skip patterns.
+
+        Args:
+            diff: Full unified diff text.
+            skip_patterns: Glob patterns to skip.
+
+        Returns:
+            Filtered diff text.
+        """
+        from fnmatch import fnmatch
+
+        sections: list[str] = []
+        current_lines: list[str] = []
+        current_file: str | None = None
+
+        for line in diff.split("\n"):
+            if line.startswith("diff --git"):
+                # Flush previous section
+                if current_file is not None and current_lines:
+                    if not any(fnmatch(current_file, pat) for pat in skip_patterns):
+                        sections.append("\n".join(current_lines))
+                # Extract filename from "diff --git a/path b/path"
+                parts = line.split(" b/", 1)
+                current_file = parts[1] if len(parts) > 1 else ""
+                current_lines = [line]
+            else:
+                current_lines.append(line)
+
+        # Flush last section
+        if current_file is not None and current_lines:
+            if not any(fnmatch(current_file, pat) for pat in skip_patterns):
+                sections.append("\n".join(current_lines))
+
+        return "\n".join(sections)
+
+    @staticmethod
+    def _apply_comment_limit(result: ReviewResult, max_comments: int) -> ReviewResult:
+        """Truncate inline comments to respect the max_comments limit.
+
+        Args:
+            result: The ReviewResult to limit.
+            max_comments: Maximum number of inline comments.
+
+        Returns:
+            A new ReviewResult with truncated inline_comments if needed.
+        """
+        if len(result.inline_comments) <= max_comments:
+            return result
+
+        return result.model_copy(
+            update={"inline_comments": result.inline_comments[:max_comments]}
+        )
 
     async def _review_chunks_concurrent(
         self,

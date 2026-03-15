@@ -139,6 +139,7 @@ class PromptBuilder:
         pr_data: dict,
         diff: str,
         files: list[PullRequestFile],
+        custom_instructions: str = "",
     ) -> str:
         """Build the full system prompt for the LLM reviewer.
 
@@ -148,6 +149,7 @@ class PromptBuilder:
             pr_data: Raw PR data from GitHub API.
             diff: Unified diff text.
             files: List of changed files.
+            custom_instructions: Optional additional instructions to append.
 
         Returns:
             The complete prompt string.
@@ -166,6 +168,10 @@ class PromptBuilder:
         blocks_on = ", ".join(sp.blocks_on) if sp.blocks_on else "nothing specific"
         nits_on = ", ".join(sp.nits_on) if sp.nits_on else "nothing specific"
         approves_when = sp.approves_when or "code is generally acceptable"
+
+        # Inject custom instructions before the diff section
+        if custom_instructions:
+            diff = f"\n\n## Additional Instructions\n{custom_instructions}\n\n{diff}"
 
         return SYSTEM_PROMPT_TEMPLATE.format(
             persona_name=persona.name,
@@ -192,6 +198,7 @@ class PromptBuilder:
         pr_data: dict,
         chunk: object,
         all_chunks: list,
+        custom_instructions: str = "",
     ) -> str:
         """Build a prompt for a single chunk in a multi-pass review.
 
@@ -204,6 +211,7 @@ class PromptBuilder:
             pr_data: Raw PR data from GitHub API.
             chunk: A DiffChunk object with diff_text, label, files, etc.
             all_chunks: All DiffChunk objects for cross-reference.
+            custom_instructions: Optional additional instructions to append.
 
         Returns:
             The complete prompt string for this chunk.
@@ -245,6 +253,12 @@ class PromptBuilder:
         blocks_on = ", ".join(sp.blocks_on) if sp.blocks_on else "nothing specific"
         nits_on = ", ".join(sp.nits_on) if sp.nits_on else "nothing specific"
         approves_when = sp.approves_when or "code is generally acceptable"
+
+        # Inject custom instructions if provided
+        if custom_instructions:
+            diff_text = (
+                f"\n\n## Additional Instructions\n{custom_instructions}\n\n{diff_text}"
+            )
 
         # Prepend cross-chunk context to the diff section
         combined_diff = cross_chunk_header + diff_text

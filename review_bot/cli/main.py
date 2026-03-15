@@ -2,6 +2,7 @@
 
 import click
 
+from review_bot.cli.compare_cmd import compare_cmd
 from review_bot.cli.init_cmd import init_cmd
 from review_bot.cli.persona_cmd import persona
 from review_bot.cli.review_cmd import review_cmd
@@ -15,6 +16,7 @@ def cli() -> None:
     """review-bot — AI code reviewer that mimics real reviewers."""
 
 
+cli.add_command(compare_cmd, name="compare")
 cli.add_command(init_cmd, name="init")
 cli.add_command(persona)
 cli.add_command(review_cmd, name="review")
