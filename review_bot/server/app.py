@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -62,6 +63,33 @@ _CREATE_TABLES_SQL = [
         last_review_at TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS review_comment_tracking (
+        comment_id INTEGER PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        persona_name TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        file_path TEXT,
+        line_number INTEGER,
+        body TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'general',
+        posted_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_polled_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS review_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        comment_id INTEGER NOT NULL,
+        feedback_type TEXT NOT NULL,
+        feedback_source TEXT NOT NULL,
+        reactor_username TEXT NOT NULL,
+        is_pr_author INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(comment_id, feedback_type, feedback_source, reactor_username)
+    )
+    """,
 ]
 
 # SQL for creating indexes on frequently queried columns
@@ -72,6 +100,11 @@ _CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON reviews(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_persona_name ON jobs(persona_name)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_persona ON review_comment_tracking(persona_name)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_category ON review_comment_tracking(category)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_created ON review_feedback(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_comment ON review_feedback(comment_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tracking_repo ON review_comment_tracking(repo)",
 ]
 
 
@@ -148,11 +181,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ImportError:
             logger.debug("RateLimitTracker not yet available, using None placeholder")
 
+        # Initialize feedback store
+        from review_bot.review.feedback import FeedbackStore
+
+        feedback_store = FeedbackStore(engine)
+        await feedback_store.ensure_tables()
+
+        # Start feedback poller as background task
+        poll_task = None
+        try:
+            from review_bot.review.feedback_poller import FeedbackPoller
+
+            # Create a minimal GitHub client for polling (no auth needed for
+            # public repos; for private repos the poller will need a token)
+            import httpx
+
+            poll_http_client = httpx.AsyncClient(
+                headers={"Accept": "application/vnd.github+json"},
+                timeout=30.0,
+            )
+            from review_bot.github.api import GitHubAPIClient
+
+            poll_github_client = GitHubAPIClient(poll_http_client)
+            feedback_poller = FeedbackPoller(
+                github_client=poll_github_client,
+                feedback_store=feedback_store,
+            )
+            poll_task = asyncio.create_task(feedback_poller.run_poll_loop())
+            logger.info("Feedback poller started as background task")
+        except Exception:
+            logger.warning(
+                "Failed to start feedback poller, continuing without it",
+                exc_info=True,
+            )
+
         # Configure webhook module with runtime dependencies
         configure(
             job_queue=job_queue,
             webhook_secret=app_settings.webhook_secret,
             persona_store=persona_store,
+            feedback_store=feedback_store,
         )
 
         # Record app start time for uptime calculation
@@ -164,11 +232,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.github_auth = github_auth
         app.state.persona_store = persona_store
         app.state.rate_limit_tracker = rate_limit_tracker
+        app.state.feedback_store = feedback_store
 
         yield
 
         # Shutdown
         logger.info("Shutting down review-bot server")
+        if poll_task is not None:
+            poll_task.cancel()
+            try:
+                await poll_task
+            except asyncio.CancelledError:
+                pass
         await job_queue.stop_worker()
         await engine.dispose()
 

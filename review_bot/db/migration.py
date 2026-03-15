@@ -58,6 +58,33 @@ _CREATE_TABLES_POSTGRESQL = [
         last_review_at TIMESTAMPTZ
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS review_comment_tracking (
+        comment_id BIGINT PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        persona_name TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        file_path TEXT,
+        line_number INTEGER,
+        body TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'general',
+        posted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_polled_at TIMESTAMPTZ
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS review_feedback (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        comment_id BIGINT NOT NULL,
+        feedback_type TEXT NOT NULL,
+        feedback_source TEXT NOT NULL,
+        reactor_username TEXT NOT NULL,
+        is_pr_author BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(comment_id, feedback_type, feedback_source, reactor_username)
+    )
+    """,
 ]
 
 # ── SQLite DDL (mirrors app.py _CREATE_TABLES_SQL) ──────────────────────
@@ -100,6 +127,33 @@ _CREATE_TABLES_SQLITE = [
         last_review_at TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS review_comment_tracking (
+        comment_id INTEGER PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        persona_name TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        file_path TEXT,
+        line_number INTEGER,
+        body TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'general',
+        posted_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_polled_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS review_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        comment_id INTEGER NOT NULL,
+        feedback_type TEXT NOT NULL,
+        feedback_source TEXT NOT NULL,
+        reactor_username TEXT NOT NULL,
+        is_pr_author INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(comment_id, feedback_type, feedback_source, reactor_username)
+    )
+    """,
 ]
 
 # ── Index DDL (backend-agnostic) ────────────────────────────────────────
@@ -110,6 +164,11 @@ _CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_reviews_created_at ON reviews(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_persona_name ON jobs(persona_name)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_persona ON review_comment_tracking(persona_name)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_category ON review_comment_tracking(category)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_created ON review_feedback(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_comment ON review_feedback(comment_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tracking_repo ON review_comment_tracking(repo)",
 ]
 
 

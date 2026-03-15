@@ -19,21 +19,30 @@ router = APIRouter()
 _job_queue: AsyncJobQueue | None = None
 _webhook_secret: str = ""
 _persona_store = None
+_feedback_store = None
 
 
 def configure(
     job_queue: AsyncJobQueue,
     webhook_secret: str,
     persona_store,
+    feedback_store=None,
 ) -> None:
     """Configure the webhook module with runtime dependencies.
 
-    Called during app startup to inject the job queue and secret.
+    Called during app startup to inject the job queue, secret, and stores.
+
+    Args:
+        job_queue: The async job queue for review processing.
+        webhook_secret: GitHub webhook HMAC secret.
+        persona_store: PersonaStore instance for persona lookups.
+        feedback_store: Optional FeedbackStore for recording feedback events.
     """
-    global _job_queue, _webhook_secret, _persona_store  # noqa: PLW0603
+    global _job_queue, _webhook_secret, _persona_store, _feedback_store  # noqa: PLW0603
     _job_queue = job_queue
     _webhook_secret = webhook_secret
     _persona_store = persona_store
+    _feedback_store = feedback_store
 
 
 def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -121,6 +130,10 @@ async def webhook_handler(
         await _handle_issue_comment(data)
     elif event == "pull_request" and data.get("action") == "labeled":
         await _handle_label_event(data)
+    elif event == "pull_request_review_comment" and data.get("action") == "created":
+        await _handle_review_comment_reply(data)
+    elif event == "pull_request_review" and data.get("action") == "dismissed":
+        await _handle_review_dismissed(data)
 
     return {"status": "ok"}
 
@@ -285,3 +298,130 @@ async def _enqueue_review(
         installation_id=installation_id,
     )
     await _job_queue.enqueue(job)
+
+
+async def _handle_review_comment_reply(data: dict) -> None:
+    """Handle pull_request_review_comment created events.
+
+    Detects replies to bot comments and records feedback based on
+    simple sentiment analysis of the reply body.
+    """
+    if _feedback_store is None:
+        return
+
+    comment = data.get("comment", {})
+    in_reply_to_id = comment.get("in_reply_to_id")
+    if not in_reply_to_id:
+        return  # Not a reply
+
+    user = comment.get("user", {})
+    username = user.get("login", "")
+    body = comment.get("body", "").lower()
+
+    # Determine if the replier is the PR author
+    pr = data.get("pull_request", {})
+    pr_author = pr.get("user", {}).get("login", "")
+    is_pr_author = username == pr_author
+
+    # Simple sentiment analysis
+    feedback_type = _analyze_reply_sentiment(body)
+
+    from review_bot.review.feedback import FeedbackEvent
+
+    event = FeedbackEvent(
+        comment_id=in_reply_to_id,
+        feedback_type=feedback_type,
+        feedback_source="reply",
+        reactor_username=username,
+        is_pr_author=is_pr_author,
+    )
+    try:
+        await _feedback_store.record_feedback(event)
+        logger.info(
+            "Recorded %s reply feedback from %s on comment %d",
+            feedback_type, username, in_reply_to_id,
+        )
+    except Exception:
+        logger.exception("Failed to record reply feedback for comment %d", in_reply_to_id)
+
+
+async def _handle_review_dismissed(data: dict) -> None:
+    """Handle pull_request_review dismissed events.
+
+    Creates negative feedback for all tracked comments in the dismissed review.
+    """
+    if _feedback_store is None:
+        return
+
+    review = data.get("review", {})
+    review_user = review.get("user", {}).get("login", "")
+
+    # The person who dismissed the review
+    sender = data.get("sender", {}).get("login", "")
+
+    # Determine if sender is PR author
+    pr = data.get("pull_request", {})
+    pr_author = pr.get("user", {}).get("login", "")
+    is_pr_author = sender == pr_author
+
+    from review_bot.review.feedback import FeedbackEvent
+
+    # We don't have direct access to review comments from the dismissed event,
+    # but we record a feedback event for the review ID if available
+    review_id = str(review.get("id", ""))
+    if not review_id:
+        return
+
+    # Record dismissal as negative feedback using the review node_id
+    # The actual comment mapping happens via review_comment_tracking
+    event = FeedbackEvent(
+        comment_id=review.get("id", 0),
+        feedback_type="negative",
+        feedback_source="dismissed",
+        reactor_username=sender,
+        is_pr_author=is_pr_author,
+    )
+    try:
+        await _feedback_store.record_feedback(event)
+        logger.info(
+            "Recorded dismissed review feedback from %s for review %s",
+            sender, review_id,
+        )
+    except Exception:
+        logger.exception("Failed to record dismissed review feedback for %s", review_id)
+
+
+def _analyze_reply_sentiment(body: str) -> str:
+    """Analyze the sentiment of a reply comment body.
+
+    Uses simple keyword matching for classification.
+
+    Args:
+        body: Lowercased comment body text.
+
+    Returns:
+        Feedback type: 'positive', 'negative', 'confused', or 'neutral'.
+    """
+    positive_keywords = [
+        "thanks", "thank you", "good catch", "great point", "agreed",
+        "nice", "fixed", "will fix", "good find", "makes sense",
+    ]
+    negative_keywords = [
+        "disagree", "wrong", "incorrect", "not relevant", "false positive",
+        "not a bug", "intentional", "by design", "nit", "nitpick",
+    ]
+    confused_keywords = [
+        "what do you mean", "confused", "don't understand",
+        "can you explain", "unclear", "?",
+    ]
+
+    for keyword in positive_keywords:
+        if keyword in body:
+            return "positive"
+    for keyword in negative_keywords:
+        if keyword in body:
+            return "negative"
+    for keyword in confused_keywords:
+        if keyword in body:
+            return "confused"
+    return "neutral"
