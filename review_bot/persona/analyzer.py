@@ -192,7 +192,8 @@ class PersonaAnalyzer:
             s.category: s.positive_count + s.negative_count for s in summaries
         }
 
-        # Minimum sample size before adjustments are applied
+        # Minimum sample size per category before adjustments are applied
+        # (per plan sections 3.4-3.5)
         min_sample_size = 10
 
         # Adjust priority severities based on feedback
