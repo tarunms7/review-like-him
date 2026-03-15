@@ -353,9 +353,6 @@ async def _handle_review_dismissed(data: dict) -> None:
     if _feedback_store is None:
         return
 
-    review = data.get("review", {})
-    review_user = review.get("user", {}).get("login", "")
-
     # The person who dismissed the review
     sender = data.get("sender", {}).get("login", "")
 
