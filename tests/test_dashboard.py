@@ -552,7 +552,6 @@ class TestDbUrlSanitization:
         """db_url with credentials should have them masked."""
         import re
 
-        from review_bot.dashboard.router import router as _router  # noqa: F811
 
         # The sanitization regex
         url = "postgresql://admin:s3cr3t@prod-db.internal/app"
