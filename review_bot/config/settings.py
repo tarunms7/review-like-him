@@ -68,12 +68,6 @@ class Settings(BaseSettings):
         default=6,
         description="Hours between feedback polling cycles",
     )
-    max_personas_per_pr: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="Maximum number of personas that can review a single PR",
-    )
 
 
     @field_validator("min_severity")
