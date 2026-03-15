@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 logger = logging.getLogger("review-bot")
 
 # ── Table names in migration order ──────────────────────────────────────
-_TABLE_NAMES = ("reviews", "jobs", "persona_stats")
+_TABLE_NAMES = ("reviews", "jobs", "persona_stats", "review_comment_tracking", "review_feedback")
 
 # ── PostgreSQL-specific DDL ─────────────────────────────────────────────
 _CREATE_TABLES_POSTGRESQL = [
@@ -295,17 +295,21 @@ async def import_to_postgresql(
 
             imported = 0
             for row in rows:
-                # Filter out auto-generated id for reviews table
-                row_data = {k: v for k, v in row.items() if k != "id" or table != "reviews"}
+                # Filter out auto-generated id for tables with identity columns
+                _auto_id_tables = {"reviews", "review_feedback"}
+                row_data = {
+                    k: v
+                    for k, v in row.items()
+                    if k != "id" or table not in _auto_id_tables
+                }
 
                 columns = list(row_data.keys())
                 placeholders = ", ".join(f":{c}" for c in columns)
                 col_names = ", ".join(columns)
 
                 # Determine conflict target
-                if table == "reviews":
-                    # reviews has auto-generated id; use ON CONFLICT DO NOTHING
-                    # without specifying target to skip any conflicts
+                if table in {"reviews", "review_feedback"}:
+                    # Auto-generated id; use ON CONFLICT DO NOTHING without target
                     sql = (
                         f"INSERT INTO {table} ({col_names}) "  # noqa: S608
                         f"VALUES ({placeholders}) "
@@ -316,6 +320,12 @@ async def import_to_postgresql(
                         f"INSERT INTO {table} ({col_names}) "  # noqa: S608
                         f"VALUES ({placeholders}) "
                         "ON CONFLICT (id) DO NOTHING"
+                    )
+                elif table == "review_comment_tracking":
+                    sql = (
+                        f"INSERT INTO {table} ({col_names}) "  # noqa: S608
+                        f"VALUES ({placeholders}) "
+                        "ON CONFLICT (comment_id) DO NOTHING"
                     )
                 else:  # persona_stats
                     sql = (

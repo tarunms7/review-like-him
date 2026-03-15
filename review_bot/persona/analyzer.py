@@ -146,6 +146,7 @@ class PersonaAnalyzer:
             existing_profile.name,
         )
         profile.overrides = existing_profile.overrides
+        profile.smoothed_category_rates = existing_profile.smoothed_category_rates
         profile.last_mined_at = datetime.now(UTC).isoformat()
         repos = {r.get("repo", "") for r in all_weighted_reviews if r.get("repo")}
         profile.mined_from = (
@@ -184,10 +185,17 @@ class PersonaAnalyzer:
             logger.info("No feedback data for persona '%s', skipping reanalysis", persona_name)
             return profile
 
-        # Build approval rates by category
+        # Build approval rates and total feedback counts by category
         approval_rates: dict[str, float] = {
             s.category: s.approval_rate for s in summaries
         }
+        feedback_counts: dict[str, int] = {
+            s.category: s.positive_count + s.negative_count for s in summaries
+        }
+
+        # Minimum sample size per category before adjustments are applied
+        # (per plan sections 3.4-3.5)
+        min_sample_size = 10
 
         # Adjust priority severities based on feedback
         adjusted_priorities: list[Priority] = []
@@ -197,8 +205,23 @@ class PersonaAnalyzer:
                 adjusted_priorities.append(priority)
                 continue
 
+            # Skip adjustment if insufficient feedback data
+            total_feedback = feedback_counts.get(priority.category, 0)
+            if total_feedback < min_sample_size:
+                logger.info(
+                    "Skipping adjustment for %s: only %d feedback events (need %d)",
+                    priority.category, total_feedback, min_sample_size,
+                )
+                adjusted_priorities.append(priority)
+                continue
+
+            # Use stored previous smoothed rate, or 0.5 as initial value
+            previous_rate = profile.smoothed_category_rates.get(
+                priority.category, 0.5,
+            )
+
             # Apply EMA smoothing
-            smoothed = _apply_ema_smoothing(rate, 0.5, alpha=0.3)
+            smoothed = _apply_ema_smoothing(rate, previous_rate, alpha=0.3)
 
             # Map smoothed rate to severity adjustment
             new_severity = priority.severity
@@ -232,6 +255,9 @@ class PersonaAnalyzer:
                     "Promoting %s severity from %s to %s (approval=%.2f)",
                     priority.category, priority.severity, new_severity, smoothed,
                 )
+
+            # Persist the smoothed rate for next run
+            profile.smoothed_category_rates[priority.category] = smoothed
 
             adjusted_priorities.append(
                 Priority(
