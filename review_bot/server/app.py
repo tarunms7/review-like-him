@@ -190,11 +190,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Start feedback poller as background task
         poll_task = None
         try:
-            from review_bot.review.feedback_poller import FeedbackPoller
-
             # Create a minimal GitHub client for polling (no auth needed for
             # public repos; for private repos the poller will need a token)
             import httpx
+
+            from review_bot.review.feedback_poller import FeedbackPoller
 
             poll_http_client = httpx.AsyncClient(
                 headers={"Accept": "application/vnd.github+json"},

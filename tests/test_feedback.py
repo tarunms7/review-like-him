@@ -9,11 +9,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from review_bot.persona.analyzer import PersonaAnalyzer, _apply_ema_smoothing
+from review_bot.persona.analyzer import _apply_ema_smoothing
 from review_bot.review.feedback import (
     FeedbackEvent,
     FeedbackStore,
-    FeedbackSummary,
 )
 from review_bot.review.feedback_poller import (
     REACTION_FEEDBACK,
