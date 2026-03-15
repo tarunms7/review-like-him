@@ -411,15 +411,34 @@ class TestDiffSizeMultipass:
         )
         orch._formatter.format = MagicMock(return_value=chunk_result)
 
-        result = await orch.run_review("owner", "repo", 42, "alice")
+        # Mock DiffChunker to return 2 chunks so build_chunked is used
+        chunk_a = MagicMock(
+            chunk_id="chunk-1",
+            label="group-a",
+            diff_text="diff a",
+            files=small_files[:3],
+        )
+        chunk_b = MagicMock(
+            chunk_id="chunk-2",
+            label="group-b",
+            diff_text="diff b",
+            files=small_files[3:],
+        )
+        mock_chunking = MagicMock(
+            chunks=[chunk_a, chunk_b],
+            skipped_files=[],
+        )
+
+        with patch(
+            "review_bot.review.orchestrator.DiffChunker"
+        ) as mock_chunker:
+            mock_chunker.return_value.chunk.return_value = mock_chunking
+            result = await orch.run_review("owner", "repo", 42, "alice")
 
         assert result.persona_name == "alice"
-        # Should NOT have used normal build (single-pass) since diff is huge
-        # Multi-pass path was entered (build or build_chunked was called)
-        assert (
-            orch._prompt_builder.build_chunked.call_count >= 1
-            or orch._prompt_builder.build.call_count >= 1
-        )
+        # Diff-size condition triggered multi-pass: build_chunked must be called
+        orch._prompt_builder.build_chunked.assert_called()
+        orch._prompt_builder.build.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
