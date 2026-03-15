@@ -305,7 +305,9 @@ class TestHandleLabelEventFanOut:
         assert resp.status_code == 200
         mock_job_queue.enqueue.assert_not_called()
 
-    def test_duplicate_labels_deduplicated(self, webhook_client, mock_job_queue, mock_persona_store):
+    def test_duplicate_labels_deduplicated(
+        self, webhook_client, mock_job_queue, mock_persona_store,
+    ):
         """Duplicate review: labels should only enqueue once."""
         data = {
             "action": "labeled",
@@ -328,7 +330,9 @@ class TestHandleLabelEventFanOut:
 class TestIssueCommentDedup:
     """Test _handle_issue_comment uses deduplicated enqueue."""
 
-    def test_duplicate_personas_in_comment(self, webhook_client, mock_job_queue, mock_persona_store):
+    def test_duplicate_personas_in_comment(
+        self, webhook_client, mock_job_queue, mock_persona_store,
+    ):
         """Duplicate persona names in /review-as should be deduplicated."""
         data = {
             "action": "created",
