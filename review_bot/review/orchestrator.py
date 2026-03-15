@@ -17,8 +17,8 @@ from review_bot.review.chunker import DiffChunker
 from review_bot.review.formatter import ReviewFormatter, ReviewResult
 from review_bot.review.github_poster import ReviewPoster
 from review_bot.review.merger import ChunkResultMerger
-from review_bot.review.prompt_builder import PromptBuilder
-from review_bot.review.repo_scanner import RepoScanner
+from review_bot.review.prompt_builder import MAX_DIFF_CHARS, PromptBuilder
+from review_bot.review.repo_scanner import RepoContext, RepoScanner
 from review_bot.review.reviewer import ClaudeReviewer
 from review_bot.review.severity import filter_result_by_severity
 
@@ -29,6 +29,9 @@ MULTI_PASS_THRESHOLD = 80
 
 # PRs with more than this many files get a summary-only review
 EXTREME_PR_THRESHOLD = 1000
+
+# Backward-compatible alias — kept for external consumers
+LARGE_PR_FILE_THRESHOLD: int = 500
 
 
 class ReviewOrchestrator:
@@ -152,11 +155,17 @@ class ReviewOrchestrator:
             repo_context.frameworks,
         )
 
-        # Handle large PRs (80+ files) — multi-pass chunked review
-        if len(files) > MULTI_PASS_THRESHOLD:
+        # Determine effective severity from repo config or global default
+        effective_severity = repo_context.repo_config.get(
+            "min_severity", self._min_severity
+        )
+
+        # Handle large PRs (80+ files or huge diffs) — multi-pass chunked review
+        if len(files) > MULTI_PASS_THRESHOLD or len(diff) > MAX_DIFF_CHARS * 2:
             logger.info(
-                "Large PR with %d files, using multi-pass review",
+                "Large PR with %d files (%d chars diff), using multi-pass review",
                 len(files),
+                len(diff),
             )
             result = await self._handle_large_pr_multipass(
                 owner,
@@ -191,8 +200,8 @@ class ReviewOrchestrator:
             )
 
         # 6b. Apply severity filter if configured
-        if self._min_severity > 0:
-            result = filter_result_by_severity(result, self._min_severity)
+        if effective_severity > 0:
+            result = filter_result_by_severity(result, effective_severity)
 
         # 7. Post review to GitHub
         try:
@@ -297,7 +306,7 @@ class ReviewOrchestrator:
         pr_data: dict,
         files: list,
         diff: str,
-        repo_context: object,
+        repo_context: RepoContext,
         pr_url: str,
     ) -> ReviewResult:
         """Handle large PRs using multi-pass chunked review.
@@ -337,6 +346,24 @@ class ReviewOrchestrator:
             len(chunking_result.chunks),
             len(chunking_result.skipped_files),
         )
+
+        # Single chunk after partitioning — skip cross-chunk context,
+        # use normal single-pass flow instead.
+        if len(chunking_result.chunks) == 1:
+            logger.info("Single chunk after partitioning, using single-pass flow")
+            prompt = self._prompt_builder.build(
+                persona=persona,
+                repo_context=repo_context,
+                pr_data=pr_data,
+                diff=chunking_result.chunks[0].diff_text,
+                files=chunking_result.chunks[0].files,
+            )
+            raw_output = await self._reviewer.review(prompt)
+            return self._formatter.format(
+                raw_output=raw_output,
+                persona_name=persona.name,
+                pr_url=pr_url,
+            )
 
         # Build prompts for each chunk
         prompts: list[str] = []
