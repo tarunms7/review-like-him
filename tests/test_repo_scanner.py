@@ -9,14 +9,11 @@ import httpx
 import pytest
 
 from review_bot.review.repo_scanner import (
-    APIContract,
+    _MAX_CONTEXT_SIZE,
     ModuleBoundary,
-    OwnershipHint,
     RepoContext,
     RepoScanner,
-    _MAX_CONTEXT_SIZE,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
