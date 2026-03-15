@@ -60,9 +60,11 @@ STRATEGIES: dict[str, FileTypeStrategy] = {
         ],
         prompt_instructions="""\
 **⚠️ DATABASE MIGRATION FILE — Apply heightened scrutiny:**
-- Flag any `DROP TABLE`, `DROP COLUMN`, or `TRUNCATE` as HIGH severity unless wrapped in a safety check.
+- Flag `DROP TABLE`, `DROP COLUMN`, or `TRUNCATE` as HIGH severity
+  unless wrapped in a safety check.
 - Flag `ALTER TABLE` on large tables without concurrent index creation as a potential lock risk.
-- Flag missing `BEGIN`/`COMMIT` or transaction wrapper (Django `atomic`, Alembic `op.batch_alter_table`).
+- Flag missing `BEGIN`/`COMMIT` or transaction wrapper
+  (Django `atomic`, Alembic `op.batch_alter_table`).
 - Flag adding NOT NULL columns without a default value (will fail on existing rows).
 - Flag destructive operations that are not reversible (missing `down` migration or rollback).
 - Flag raw SQL that could cause data loss without confirmation.
@@ -102,7 +104,8 @@ STRATEGIES: dict[str, FileTypeStrategy] = {
         prompt_instructions="""\
 **Test file — Focus on coverage quality and assertion rigor:**
 - Check that tests cover both happy path and error/edge cases.
-- Flag assertions that are too broad (e.g., `assert result is not None` when the value should be checked).
+- Flag assertions that are too broad (e.g., `assert result is not None`
+  when the value should be checked).
 - Flag tests that test implementation details rather than behavior.
 - Check for proper test isolation — no shared mutable state between tests.
 - Flag missing `async` markers on async test functions (pytest-asyncio).
