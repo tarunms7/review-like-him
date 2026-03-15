@@ -481,8 +481,8 @@ class TestSingleChunkFallback:
 
         with patch(
             "review_bot.review.orchestrator.DiffChunker"
-        ) as MockChunker:
-            MockChunker.return_value.chunk.return_value = mock_chunking
+        ) as mock_chunker:
+            mock_chunker.return_value.chunk.return_value = mock_chunking
 
             result = await orch.run_review("owner", "repo", 42, "alice")
 
