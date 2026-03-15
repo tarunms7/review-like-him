@@ -202,7 +202,10 @@ class TestResolveThreads:
         comments = [
             _make_comment(comment_id=3, user="alice", body="Root comment here"),
             _make_comment(comment_id=2, in_reply_to_id=3, user="bob", body="Reply to root here"),
-            _make_comment(comment_id=1, in_reply_to_id=2, user="charlie", body="Reply to reply here"),
+            _make_comment(
+                comment_id=1, in_reply_to_id=2,
+                user="charlie", body="Reply to reply here",
+            ),
         ]
         result = resolve_threads(comments)
         root = next(c for c in result if c["comment_id"] == 3)
