@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS review_comment_tracking (
     body TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'general',
     posted_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_polled_at TEXT
+    last_polled_at TEXT,
+    pr_author TEXT NOT NULL DEFAULT ''
 )
 """
 
@@ -158,6 +159,7 @@ class FeedbackStore:
         line_number: int | None,
         body: str,
         category: str,
+        pr_author: str = "",
     ) -> None:
         """Insert a tracked comment into the review_comment_tracking table.
 
@@ -171,14 +173,15 @@ class FeedbackStore:
             line_number: Line number for inline comments, or None.
             body: Comment body text.
             category: Review category (e.g. 'Security', 'Bugs').
+            pr_author: GitHub username of the PR author.
         """
         sql = text("""
             INSERT OR IGNORE INTO review_comment_tracking
                 (comment_id, review_id, persona_name, repo, pr_number,
-                 file_path, line_number, body, category, posted_at)
+                 file_path, line_number, body, category, posted_at, pr_author)
             VALUES
                 (:comment_id, :review_id, :persona_name, :repo, :pr_number,
-                 :file_path, :line_number, :body, :category, :posted_at)
+                 :file_path, :line_number, :body, :category, :posted_at, :pr_author)
         """)
         async with self._engine.begin() as conn:
             await conn.execute(sql, {
@@ -192,6 +195,7 @@ class FeedbackStore:
                 "body": body,
                 "category": category,
                 "posted_at": datetime.now(UTC).isoformat(),
+                "pr_author": pr_author,
             })
 
     async def get_persona_feedback_summary(
@@ -363,7 +367,7 @@ class FeedbackStore:
         cutoff = (datetime.now(UTC) - timedelta(days=max_age_days)).isoformat()
         sql = text("""
             SELECT comment_id, review_id, persona_name, repo, pr_number,
-                   file_path, line_number, body, category, posted_at
+                   file_path, line_number, body, category, posted_at, pr_author
             FROM review_comment_tracking
             WHERE posted_at >= :cutoff
         """)
@@ -371,6 +375,26 @@ class FeedbackStore:
             result = await conn.execute(sql, {"cutoff": cutoff})
             columns = list(result.keys())
             return [dict(zip(columns, row)) for row in result.fetchall()]
+
+    async def get_pr_author_for_comment(self, comment_id: int) -> str | None:
+        """Return the PR author username for a tracked comment.
+
+        Args:
+            comment_id: GitHub comment ID.
+
+        Returns:
+            PR author username, or None if the comment is not tracked.
+        """
+        sql = text("""
+            SELECT pr_author FROM review_comment_tracking
+            WHERE comment_id = :comment_id
+        """)
+        async with self._engine.connect() as conn:
+            result = await conn.execute(sql, {"comment_id": comment_id})
+            row = result.fetchone()
+            if row and row[0]:
+                return row[0]
+            return None
 
     async def get_stored_reactions(self, comment_id: int) -> list[dict]:
         """Get all stored feedback events for a comment.

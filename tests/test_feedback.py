@@ -352,7 +352,7 @@ class TestReactionMapping:
 
     def test_positive_reactions(self) -> None:
         """Positive GitHub reactions should map to 'positive'."""
-        for reaction in ["+1", "heart", "hooray", "rocket", "laugh"]:
+        for reaction in ["+1", "heart", "hooray", "rocket"]:
             assert REACTION_FEEDBACK[reaction] == "positive"
 
     def test_negative_reactions(self) -> None:
@@ -364,8 +364,87 @@ class TestReactionMapping:
         assert REACTION_FEEDBACK["confused"] == "confused"
 
     def test_neutral_reactions(self) -> None:
-        """Eyes reaction should map to 'neutral'."""
+        """Eyes and laugh reactions should map to 'neutral'."""
         assert REACTION_FEEDBACK["eyes"] == "neutral"
+        assert REACTION_FEEDBACK["laugh"] == "neutral"
+
+
+class TestPrAuthorTracking:
+    """Tests for PR author tracking and is_pr_author detection."""
+
+    @pytest.mark.asyncio()
+    async def test_track_comment_with_pr_author(self, feedback_store: FeedbackStore) -> None:
+        """track_posted_comment should store pr_author."""
+        await feedback_store.track_posted_comment(
+            comment_id=1100, review_id="rev-11", persona_name="alice",
+            repo="owner/repo", pr_number=42, file_path=None,
+            line_number=None, body="Nice code", category="Style",
+            pr_author="pr-dev",
+        )
+        comments = await feedback_store.get_tracked_comments()
+        assert len(comments) == 1
+        assert comments[0]["pr_author"] == "pr-dev"
+
+    @pytest.mark.asyncio()
+    async def test_get_pr_author_for_comment(self, feedback_store: FeedbackStore) -> None:
+        """get_pr_author_for_comment should return stored pr_author."""
+        await feedback_store.track_posted_comment(
+            comment_id=1200, review_id="rev-12", persona_name="alice",
+            repo="owner/repo", pr_number=42, file_path=None,
+            line_number=None, body="Check this", category="Bugs",
+            pr_author="the-author",
+        )
+        author = await feedback_store.get_pr_author_for_comment(1200)
+        assert author == "the-author"
+
+    @pytest.mark.asyncio()
+    async def test_get_pr_author_for_missing_comment(self, feedback_store: FeedbackStore) -> None:
+        """get_pr_author_for_comment should return None for unknown comment."""
+        author = await feedback_store.get_pr_author_for_comment(9999)
+        assert author is None
+
+    @pytest.mark.asyncio()
+    async def test_poller_sets_is_pr_author(self, feedback_store: FeedbackStore) -> None:
+        """Poller should set is_pr_author=True when reactor matches pr_author."""
+        await feedback_store.track_posted_comment(
+            comment_id=1300, review_id="rev-13", persona_name="alice",
+            repo="owner/repo", pr_number=42, file_path="src/main.py",
+            line_number=5, body="Check this", category="Bugs",
+            pr_author="pr-dev",
+        )
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            {"content": "+1", "user": {"login": "pr-dev"}},
+            {"content": "heart", "user": {"login": "other-user"}},
+        ]
+        mock_client = MagicMock()
+        mock_client._request = AsyncMock(return_value=mock_response)
+
+        poller = FeedbackPoller(
+            github_client=mock_client,
+            feedback_store=feedback_store,
+        )
+        new_count = await poller.poll_all_tracked_comments()
+        assert new_count == 2
+
+        stored = await feedback_store.get_stored_reactions(1300)
+        by_user = {r["reactor_username"]: r for r in stored}
+        assert by_user["pr-dev"]["is_pr_author"] == 1
+        assert by_user["other-user"]["is_pr_author"] == 0
+
+    @pytest.mark.asyncio()
+    async def test_track_comment_default_pr_author(self, feedback_store: FeedbackStore) -> None:
+        """track_posted_comment without pr_author should default to empty string."""
+        await feedback_store.track_posted_comment(
+            comment_id=1400, review_id="rev-14", persona_name="alice",
+            repo="owner/repo", pr_number=42, file_path=None,
+            line_number=None, body="Test", category="Style",
+        )
+        comments = await feedback_store.get_tracked_comments()
+        matching = [c for c in comments if c["comment_id"] == 1400]
+        assert len(matching) == 1
+        assert matching[0]["pr_author"] == ""
 
 
 class TestWebhookFeedbackHandlers:
