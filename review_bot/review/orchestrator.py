@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from review_bot.config.repo_config import RepoConfig, SEVERITY_TO_INT
+from review_bot.config.repo_config import SEVERITY_TO_INT, RepoConfig
 from review_bot.github.api import GitHubAPIClient
 from review_bot.persona.profile import PersonaProfile
 from review_bot.persona.store import PersonaStore
