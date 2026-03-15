@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from review_bot.github.api import PullRequestFile
 from review_bot.review.file_strategy import (
-    FileType,
-    FileTypeStrategy,
     STRATEGIES,
+    FileType,
     classify_file,
     get_file_strategies,
     get_strategy,
