@@ -47,6 +47,7 @@ packages = ["review_bot"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+force-exclude = true
 extend-exclude = ["review_bot/dashboard/static", "review_bot/dashboard/templates"]
 
 [tool.ruff.lint]
