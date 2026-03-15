@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from review_bot.github.api import PullRequestFile
 from review_bot.review.chunker import (
     DEFAULT_CHUNK_MAX_CHARS,
-    DEFAULT_CHUNK_MAX_FILES,
     INDIVIDUAL_FILE_MAX_CHARS,
     ChunkingResult,
-    DiffChunk,
     DiffChunker,
 )
 

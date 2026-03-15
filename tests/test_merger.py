@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from review_bot.review.formatter import (
     CategorySection,
     Finding,
