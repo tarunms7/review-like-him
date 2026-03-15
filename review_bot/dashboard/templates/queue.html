@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Queue{% endblock %}
+{% block content %}
+<h1>Job Queue</h1>
+
+{% if has_stale %}
+<article class="stale-warning">
+    <strong>Warning:</strong> One or more jobs have been running for over 10 minutes and may be stale.
+</article>
+{% endif %}
+
+<h2>Running ({{ snapshot.running|length }})</h2>
+{% if snapshot.running %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Repo</th>
+            <th>PR #</th>
+            <th>Persona</th>
+            <th>Started At</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for job in snapshot.running %}
+        <tr>
+            <td>{{ job.id[:8] }}</td>
+            <td>{{ job.owner }}/{{ job.repo }}</td>
+            <td>#{{ job.pr_number }}</td>
+            <td>{{ job.persona_name }}</td>
+            <td>{{ job.started_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No running jobs.</p>
+{% endif %}
+
+<h2>Queued ({{ snapshot.queued|length }})</h2>
+{% if snapshot.queued %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Repo</th>
+            <th>PR #</th>
+            <th>Persona</th>
+            <th>Queued At</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for job in snapshot.queued %}
+        <tr>
+            <td>{{ job.id[:8] }}</td>
+            <td>{{ job.owner }}/{{ job.repo }}</td>
+            <td>#{{ job.pr_number }}</td>
+            <td>{{ job.persona_name }}</td>
+            <td>{{ job.queued_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No queued jobs.</p>
+{% endif %}
+
+<h2>Failed (last 24h) ({{ snapshot.failed|length }})</h2>
+{% if snapshot.failed %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Repo</th>
+            <th>PR #</th>
+            <th>Persona</th>
+            <th>Error</th>
+            <th>Failed At</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for job in snapshot.failed %}
+        <tr>
+            <td>{{ job.id[:8] }}</td>
+            <td>{{ job.owner }}/{{ job.repo }}</td>
+            <td>#{{ job.pr_number }}</td>
+            <td>{{ job.persona_name }}</td>
+            <td>{{ job.error_message or 'Unknown' }}</td>
+            <td>{{ job.completed_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No failed jobs in the last 24 hours.</p>
+{% endif %}
+{% endblock %}

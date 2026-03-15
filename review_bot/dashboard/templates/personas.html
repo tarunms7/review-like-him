@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Personas{% endblock %}
+{% block content %}
+<h1>Persona Statistics</h1>
+
+{% if persona_stats %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Persona</th>
+            <th>Total Reviews</th>
+            <th>Avg Comments</th>
+            <th>Avg Duration (ms)</th>
+            <th>Approvals</th>
+            <th>Change Requests</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for p in persona_stats %}
+        <tr>
+            <td>{{ p.persona_name }}</td>
+            <td>{{ p.total_reviews }}</td>
+            <td>{{ p.avg_comments }}</td>
+            <td>{{ p.avg_duration_ms }}</td>
+            <td>{{ p.approvals }}</td>
+            <td>{{ p.change_requests }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No data yet. Persona statistics will appear here after reviews are processed.</p>
+{% endif %}
+{% endblock %}

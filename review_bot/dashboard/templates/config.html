@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Config{% endblock %}
+{% block content %}
+<h1>Configuration</h1>
+
+<h2>Settings</h2>
+{% if settings %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Setting</th>
+            <th>Value</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for key, value in settings.items() %}
+        <tr>
+            <td>{{ key }}</td>
+            <td>{{ value }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No data yet. Settings could not be loaded.</p>
+{% endif %}
+
+<h2>Personas</h2>
+{% if personas %}
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for p in personas %}
+        <tr>
+            <td>{{ p.name }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No data yet. No personas have been configured.</p>
+{% endif %}
+{% endblock %}

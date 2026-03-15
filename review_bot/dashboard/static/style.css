@@ -1,0 +1,63 @@
+/* Dashboard custom styles augmenting Pico CSS */
+
+.stat-number {
+    font-size: 2.5rem;
+    font-weight: bold;
+    text-align: center;
+    margin: 0.5rem 0;
+}
+
+.card header {
+    text-align: center;
+    font-weight: 600;
+}
+
+/* Status indicator colors */
+.status-running {
+    color: #22c55e;
+    font-weight: bold;
+}
+
+.status-stopped {
+    color: #ef4444;
+    font-weight: bold;
+}
+
+.status-dead {
+    color: #ef4444;
+    font-weight: bold;
+}
+
+.status-unknown {
+    color: #a3a3a3;
+    font-weight: bold;
+}
+
+/* Verdict colors */
+.verdict-approve {
+    color: #22c55e;
+    font-weight: 600;
+}
+
+.verdict-request_changes {
+    color: #ef4444;
+    font-weight: 600;
+}
+
+.verdict-comment {
+    color: #eab308;
+    font-weight: 600;
+}
+
+/* Stale job warning */
+.stale-warning {
+    background-color: #fef3c7;
+    border-left: 4px solid #f59e0b;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+/* Navigation active state */
+nav ul li a:hover {
+    text-decoration: underline;
+}

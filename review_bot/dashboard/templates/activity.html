@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Activity{% endblock %}
+{% block content %}
+<h1>Activity Timeline</h1>
+
+<form method="get" action="/dashboard/activity" role="search">
+    <div class="grid">
+        <label>
+            Persona
+            <input type="text" name="persona" value="{{ persona or '' }}" placeholder="Filter by persona">
+        </label>
+        <label>
+            Repository
+            <input type="text" name="repo" value="{{ repo or '' }}" placeholder="Filter by repo">
+        </label>
+        <label>
+            &nbsp;
+            <button type="submit">Filter</button>
+        </label>
+    </div>
+</form>
+
+{% if rows %}
+<p>Showing {{ rows|length }} of {{ total_count }} reviews (page {{ page }})</p>
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>Persona</th>
+            <th>Repository</th>
+            <th>PR #</th>
+            <th>Verdict</th>
+            <th>Comments</th>
+            <th>Duration (ms)</th>
+            <th>Date</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row.persona_name }}</td>
+            <td>{{ row.repo }}</td>
+            <td>
+                {% if row.pr_url %}
+                <a href="{{ row.pr_url }}">#{{ row.pr_number }}</a>
+                {% else %}
+                #{{ row.pr_number }}
+                {% endif %}
+            </td>
+            <td><span class="verdict-{{ row.verdict }}">{{ row.verdict }}</span></td>
+            <td>{{ row.comment_count }}</td>
+            <td>{{ row.duration_ms }}</td>
+            <td>{{ row.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+
+<nav>
+    <ul>
+        {% if page > 1 %}
+        <li><a href="/dashboard/activity?page={{ page - 1 }}&per_page={{ per_page }}{% if persona %}&persona={{ persona }}{% endif %}{% if repo %}&repo={{ repo }}{% endif %}">Previous</a></li>
+        {% endif %}
+        {% if total_count > page * per_page %}
+        <li><a href="/dashboard/activity?page={{ page + 1 }}&per_page={{ per_page }}{% if persona %}&persona={{ persona }}{% endif %}{% if repo %}&repo={{ repo }}{% endif %}">Next</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% else %}
+<p>No data yet. Reviews will appear here once the bot starts processing PRs.</p>
+{% endif %}
+{% endblock %}

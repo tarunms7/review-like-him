@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>Dashboard Overview</h1>
+
+<div class="grid">
+    <article class="card">
+        <header>Reviews (24h)</header>
+        <p class="stat-number">{{ review_counts['24h'] }}</p>
+    </article>
+    <article class="card">
+        <header>Reviews (7d)</header>
+        <p class="stat-number">{{ review_counts['7d'] }}</p>
+    </article>
+    <article class="card">
+        <header>Reviews (30d)</header>
+        <p class="stat-number">{{ review_counts['30d'] }}</p>
+    </article>
+</div>
+
+<div class="grid">
+    <article class="card">
+        <header>Active Personas</header>
+        <p class="stat-number">{{ active_personas }}</p>
+    </article>
+    <article class="card">
+        <header>Queue Depth</header>
+        <p class="stat-number">{{ queue_depth }}</p>
+    </article>
+    <article class="card">
+        <header>Worker Status</header>
+        <p>
+            <span class="status-{{ worker_status }}">{{ worker_status }}</span>
+        </p>
+    </article>
+</div>
+
+{% if review_counts['24h'] == 0 and review_counts['7d'] == 0 and review_counts['30d'] == 0 %}
+<p>No data yet. Reviews will appear here once the bot starts processing PRs.</p>
+{% endif %}
+{% endblock %}
