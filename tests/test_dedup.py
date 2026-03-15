@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -354,7 +353,7 @@ class TestTemporalDedupIntegration:
 
     def test_temporal_weight_incorporates_dedup(self) -> None:
         """Verify weight = temporal * dedup_weight."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recent_date = (now - timedelta(days=30)).isoformat()
 
         comments = [
@@ -380,7 +379,7 @@ class TestTemporalDedupIntegration:
 
     def test_dedup_weight_default_when_missing(self) -> None:
         """temporal.apply_weights handles missing dedup_weight gracefully (defaults to 1.0)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recent_date = (now - timedelta(days=30)).isoformat()
 
         comments = [
