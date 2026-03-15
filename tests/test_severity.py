@@ -13,9 +13,6 @@ from review_bot.review.formatter import (
     ReviewResult,
 )
 from review_bot.review.severity import (
-    CATEGORY_SEVERITY,
-    CONFIDENCE_SEVERITY_BOOST,
-    SECURITY_OVERRIDE_KEYWORDS,
     _infer_comment_category,
     _is_critical_security,
     compute_finding_severity,
