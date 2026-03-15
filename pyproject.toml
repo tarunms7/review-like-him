@@ -35,6 +35,9 @@ dev = [
     "respx>=0.21",
     "ruff>=0.3",
 ]
+postgresql = [
+    "asyncpg>=0.29",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["review_bot"]
