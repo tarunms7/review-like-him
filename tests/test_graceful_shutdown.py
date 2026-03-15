@@ -220,8 +220,6 @@ class TestDrainTimeoutForceCancels:
         await queue.start_worker()
 
         # Mock a job that takes forever
-        original_process = queue._process_job
-
         async def forever_process(job: ReviewJob) -> None:
             await asyncio.sleep(60)
 
@@ -471,16 +469,6 @@ class TestCurrentJobTracking:
             pytest.skip("_current_job not yet implemented in queue.py")
 
         assert queue._current_job is None
-
-        job_during_process: list[ReviewJob | None] = []
-        original_process = queue._process_job
-
-        async def tracking_process(job: ReviewJob) -> None:
-            await original_process(job)
-            # After processing, _current_job should still be set
-            # (cleared in finally block of the real _process_job)
-
-        queue._process_job = tracking_process  # type: ignore[assignment]
 
         await queue.start_worker()
 
