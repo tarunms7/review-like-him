@@ -25,6 +25,7 @@ async def status(request: Request) -> dict:
         return {
             "status": "degraded",
             "reason": "Rate limit tracker not initialized",
+            "rate_limits": None,
         }
 
     snapshot = tracker.snapshot()
@@ -42,5 +43,6 @@ async def status(request: Request) -> dict:
 
     return {
         "status": "ok",
+        "reason": None,
         "rate_limits": rate_limits,
     }
