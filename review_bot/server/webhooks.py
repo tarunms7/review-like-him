@@ -103,6 +103,13 @@ async def webhook_handler(
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
+    # Reject webhooks during graceful shutdown drain
+    if _job_queue is not None and getattr(_job_queue, "is_draining", False) is True:
+        raise HTTPException(
+            status_code=503,
+            detail="Server is shutting down, not accepting new webhooks",
+        )
+
     data = await request.json()
     event = x_github_event or ""
 
