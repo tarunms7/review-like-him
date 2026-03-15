@@ -146,6 +146,7 @@ class PersonaAnalyzer:
             existing_profile.name,
         )
         profile.overrides = existing_profile.overrides
+        profile.smoothed_category_rates = existing_profile.smoothed_category_rates
         profile.last_mined_at = datetime.now(UTC).isoformat()
         repos = {r.get("repo", "") for r in all_weighted_reviews if r.get("repo")}
         profile.mined_from = (
