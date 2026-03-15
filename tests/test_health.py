@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import time
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
-import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from review_bot.server.health import (
@@ -19,7 +17,6 @@ from review_bot.server.health import (
     set_start_time,
 )
 from review_bot.server.queue import AsyncJobQueue
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
