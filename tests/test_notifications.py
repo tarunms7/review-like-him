@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -13,9 +13,9 @@ from review_bot.notifications.base import (
     NotificationMessage,
 )
 from review_bot.notifications.discord import (
+    _VERDICT_COLORS,
     MAX_EMBED_DESCRIPTION,
     DiscordNotifier,
-    _VERDICT_COLORS,
 )
 from review_bot.notifications.slack import MAX_MESSAGE_LENGTH, SlackNotifier
 from review_bot.review.formatter import (
@@ -24,7 +24,6 @@ from review_bot.review.formatter import (
     InlineComment,
     ReviewResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
