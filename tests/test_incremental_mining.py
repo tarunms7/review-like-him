@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +12,6 @@ import pytest
 from review_bot.persona.analyzer import PersonaAnalyzer
 from review_bot.persona.profile import PersonaProfile, Priority, SeverityPattern
 from review_bot.persona.store import PersonaStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
