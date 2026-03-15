@@ -386,7 +386,7 @@ from review_bot.review.backends.base import ReviewerBackend
 from review_bot.review.backends.factory import create_reviewer_backend
 ```
 
-**`review_bot/review.backends/base.py`**
+**`review_bot/review/backends/base.py`**
 
 ```python
 from typing import Protocol, runtime_checkable
@@ -617,6 +617,14 @@ class PersonaAnalyzer:
         result_text = await self._backend.generate(prompt)
 ```
 
+### Database Changes
+
+Add `llm_backend` column to the `reviews` table for tracking which model produced each review:
+
+```sql
+ALTER TABLE reviews ADD COLUMN llm_backend TEXT NOT NULL DEFAULT 'claude-sdk';
+```
+
 ### Configuration
 
 | Variable | Default | Description |
@@ -629,14 +637,6 @@ class PersonaAnalyzer:
 | `REVIEW_BOT_ANTHROPIC_API_KEY` | `""` | Anthropic API key |
 
 CLI flags: `--llm-backend`, `--llm-model` on `review-bot review` and `review-bot persona mine`.
-
-### Database Changes
-
-Add `llm_backend` column to the `reviews` table for tracking which model produced each review:
-
-```sql
-ALTER TABLE reviews ADD COLUMN llm_backend TEXT NOT NULL DEFAULT 'claude-sdk';
-```
 
 ### Testing Strategy
 
@@ -1130,8 +1130,12 @@ class MineResponse(BaseModel):
     status: str = "mining_started"
     persona_name: str
 
-class PaginatedResponse(BaseModel):
-    items: list
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: list[T]
     total: int
     page: int
     per_page: int
