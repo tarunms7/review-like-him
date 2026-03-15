@@ -94,6 +94,12 @@ class GitHubAPIClient:
                     continue
 
                 resp.raise_for_status()
+                try:
+                    from review_bot.github.rate_limits import RateLimitTracker
+
+                    RateLimitTracker().update_from_response(url, resp.headers)
+                except ImportError:
+                    pass
                 return resp
 
             except httpx.TransportError as exc:
