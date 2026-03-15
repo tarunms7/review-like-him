@@ -377,7 +377,7 @@ class RepoScanner:
                 return base64.b64decode(result["content"]).decode("utf-8")
             return None
         except httpx.HTTPStatusError:
-            logger.warning("HTTP error reading file %s in %s/%s", path, owner, repo)
+            logger.debug("HTTP error reading file %s in %s/%s", path, owner, repo)
             return None
         except Exception:
             logger.warning(
