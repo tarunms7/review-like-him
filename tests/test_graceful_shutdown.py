@@ -16,7 +16,6 @@ from review_bot.config.settings import Settings
 from review_bot.server.queue import AsyncJobQueue, ReviewJob
 from review_bot.server.webhooks import configure, router
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
