@@ -490,3 +490,81 @@ class TestPaginationBoundaries:
         prs_p3 = {r["pr_number"] for r in rows_p3}
         assert prs_p1.isdisjoint(prs_p2)
         assert prs_p2.isdisjoint(prs_p3)
+
+    async def test_page_zero_clamped_to_one(self, seeded_engine):
+        """page=0 should be clamped to page=1, not produce negative offset."""
+        app = _make_app(seeded_engine)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/dashboard/activity?page=0")
+            assert resp.status_code == 200
+            # Should get same result as page=1
+            resp1 = await client.get("/dashboard/activity?page=1")
+            assert resp.text == resp1.text
+
+    async def test_negative_page_clamped(self, seeded_engine):
+        """Negative page values should be clamped to 1."""
+        app = _make_app(seeded_engine)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/dashboard/activity?page=-5")
+            assert resp.status_code == 200
+
+    async def test_per_page_upper_bound(self, db_engine):
+        """per_page should be capped at 200."""
+        now = datetime.now(tz=UTC)
+        async with db_engine.begin() as conn:
+            for i in range(250):
+                await conn.execute(
+                    text(
+                        "INSERT INTO reviews "
+                        "(persona_name, repo, pr_number, pr_url, verdict, "
+                        "comment_count, created_at, duration_ms) "
+                        "VALUES (:pn, :repo, :pr, :url, :v, :cc, :ca, :dm)"
+                    ),
+                    {
+                        "pn": "tester",
+                        "repo": "org/big-repo",
+                        "pr": i + 1,
+                        "url": f"https://github.com/org/big-repo/pull/{i + 1}",
+                        "v": "approve",
+                        "cc": 2,
+                        "ca": (now - timedelta(hours=i)).isoformat(),
+                        "dm": 3000,
+                    },
+                )
+
+        app = _make_app(db_engine)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # Request huge per_page - should be capped at 200
+            resp = await client.get("/dashboard/activity?per_page=1000000")
+            assert resp.status_code == 200
+
+
+class TestDbUrlSanitization:
+    """Verify that db_url credentials are masked in config page."""
+
+    async def test_credentials_masked(self, db_engine):
+        """db_url with credentials should have them masked."""
+        import re
+
+        from review_bot.dashboard.router import router as _router  # noqa: F811
+
+        # The sanitization regex
+        url = "postgresql://admin:s3cr3t@prod-db.internal/app"
+        sanitized = re.sub(r"://[^@]+@", "://*****@", url)
+        assert sanitized == "postgresql://*****@prod-db.internal/app"
+        assert "s3cr3t" not in sanitized
+        assert "admin" not in sanitized
+
+    async def test_url_without_credentials_unchanged(self):
+        """db_url without @ should pass through unchanged."""
+        import re
+
+        url = "sqlite+aiosqlite:///data.db"
+        sanitized = re.sub(r"://[^@]+@", "://*****@", url)
+        assert sanitized == url

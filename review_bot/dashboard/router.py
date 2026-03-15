@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -78,6 +79,9 @@ async def activity(
     repo: str | None = None,
 ):
     """Paginated activity timeline with optional persona and repo filters."""
+    # Validate pagination parameters
+    page = max(1, page)
+    per_page = max(1, min(per_page, 200))
     engine = _get_engine(request)
     try:
         rows, total_count = await queries.get_activity_page(
@@ -160,7 +164,7 @@ async def config(request: Request):
             "host": s.host,
             "port": s.port,
             "min_severity": s.min_severity,
-            "db_url": s.db_url,
+            "db_url": re.sub(r"://[^@]+@", "://*****@", s.db_url),
         }
     except Exception:
         logger.exception("Failed to load settings for dashboard config")
