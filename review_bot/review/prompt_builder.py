@@ -6,6 +6,7 @@ import logging
 
 from review_bot.github.api import PullRequestFile
 from review_bot.persona.profile import PersonaProfile
+from review_bot.review.file_strategy import get_file_strategies, get_strategy
 from review_bot.review.repo_scanner import RepoContext
 
 logger = logging.getLogger("review-bot")
@@ -24,6 +25,20 @@ _CATEGORY_FILE_HINTS: dict[str, list[str]] = {
     "documentation": [".md", ".rst", ".txt"],
     "typing": [".py", ".ts"],
 }
+
+CROSS_CHUNK_CONTEXT_TEMPLATE = """\
+## Multi-Pass Review Context
+
+You are reviewing **chunk {chunk_index} of {total_chunks}**: {chunk_label}
+
+**Other chunks in this PR:**
+{other_chunks_text}
+
+Focus your review on the files in THIS chunk only. Other chunks are being \
+reviewed separately and will be merged. Avoid duplicating comments about \
+issues visible in other chunks.
+
+"""
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are {persona_name}-bot 🤖, an automated code reviewer that reviews \
@@ -48,6 +63,7 @@ exactly like {persona_name}.
 ## Repository Context
 
 {repo_context_text}\
+{file_strategy_text}\
 ## Instructions
 
 Review the pull request diff below. Return your review as a JSON object \
@@ -60,14 +76,22 @@ with this exact structure:
     {{
       "emoji": "🐛",
       "title": "Bugs",
-      "findings": ["Finding 1", "Finding 2"]
+      "findings": [
+        {{
+          "text": "Description of the finding",
+          "confidence": "high",
+          "confidence_reason": "Why you are confident about this finding"
+        }}
+      ]
     }}
   ],
   "inline_comments": [
     {{
       "file": "path/to/file.py",
       "line": 42,
-      "body": "Your comment here"
+      "body": "Your comment here",
+      "confidence": "high",
+      "confidence_reason": "Why you are confident about this comment"
     }}
   ]
 }}
@@ -83,6 +107,14 @@ Security (🔒), Performance (⚡).
 exist → "request_changes", if only nits → "comment", \
 if everything looks good → "approve".
 - Return ONLY the JSON object, no markdown fences or extra text.
+- For each finding and inline comment, provide a confidence rating:
+  - **high**: You are certain this is a real issue (e.g. clear bug, \
+security vulnerability, obvious logic error).
+  - **medium**: You believe this is likely an issue but cannot be 100% \
+sure without more context (default).
+  - **low**: This is a suggestion or stylistic preference, not a \
+definite problem.
+- Include a brief confidence_reason explaining your rating.
 
 ## Pull Request
 
@@ -128,6 +160,7 @@ class PromptBuilder:
         pet_peeves_text = self._format_pet_peeves(persona)
         repo_context_text = self._format_repo_context(repo_context)
         overrides_text = self._format_overrides(persona)
+        file_strategy_text = self._format_file_strategies(files)
 
         sp = persona.severity_pattern
         blocks_on = ", ".join(sp.blocks_on) if sp.blocks_on else "nothing specific"
@@ -144,11 +177,94 @@ class PromptBuilder:
             approves_when=approves_when,
             overrides_text=overrides_text,
             repo_context_text=repo_context_text,
+            file_strategy_text=file_strategy_text,
             pr_title=pr_data.get("title", ""),
             pr_author=pr_data.get("user", {}).get("login", "unknown"),
             pr_description=pr_data.get("body", "") or "(no description)",
             changed_files_count=pr_data.get("changed_files", len(files)),
             diff_text=diff,
+        )
+
+    def build_chunked(
+        self,
+        persona: PersonaProfile,
+        repo_context: RepoContext,
+        pr_data: dict,
+        chunk: object,
+        all_chunks: list,
+    ) -> str:
+        """Build a prompt for a single chunk in a multi-pass review.
+
+        Injects cross-chunk context header before the diff section so the
+        LLM knows it is reviewing part of a larger PR.
+
+        Args:
+            persona: The persona profile to review as.
+            repo_context: Detected repo conventions.
+            pr_data: Raw PR data from GitHub API.
+            chunk: A DiffChunk object with diff_text, label, files, etc.
+            all_chunks: All DiffChunk objects for cross-reference.
+
+        Returns:
+            The complete prompt string for this chunk.
+        """
+        from review_bot.review.chunker import DiffChunk
+
+        chunk: DiffChunk = chunk  # type: ignore[no-redef]
+
+        # Build the cross-chunk context header
+        chunk_index = next(
+            (i + 1 for i, c in enumerate(all_chunks) if c.chunk_id == chunk.chunk_id),
+            1,
+        )
+        other_lines: list[str] = []
+        for c in all_chunks:
+            if c.chunk_id != chunk.chunk_id:
+                other_lines.append(f"- {c.label}")
+        other_chunks_text = "\n".join(other_lines) if other_lines else "- (none)"
+
+        cross_chunk_header = CROSS_CHUNK_CONTEXT_TEMPLATE.format(
+            chunk_index=chunk_index,
+            total_chunks=len(all_chunks),
+            chunk_label=chunk.label,
+            other_chunks_text=other_chunks_text,
+        )
+
+        # Build the base prompt with chunk's diff and files
+        diff_text = chunk.diff_text
+        if len(diff_text) > MAX_DIFF_CHARS:
+            diff_text = self._prioritize_diff(diff_text, chunk.files, persona)
+
+        priorities_text = self._format_priorities(persona)
+        pet_peeves_text = self._format_pet_peeves(persona)
+        repo_context_text = self._format_repo_context(repo_context)
+        overrides_text = self._format_overrides(persona)
+        file_strategy_text = self._format_file_strategies(chunk.files)
+
+        sp = persona.severity_pattern
+        blocks_on = ", ".join(sp.blocks_on) if sp.blocks_on else "nothing specific"
+        nits_on = ", ".join(sp.nits_on) if sp.nits_on else "nothing specific"
+        approves_when = sp.approves_when or "code is generally acceptable"
+
+        # Prepend cross-chunk context to the diff section
+        combined_diff = cross_chunk_header + diff_text
+
+        return SYSTEM_PROMPT_TEMPLATE.format(
+            persona_name=persona.name,
+            tone=persona.tone or "professional and constructive",
+            priorities_text=priorities_text,
+            pet_peeves_text=pet_peeves_text,
+            blocks_on=blocks_on,
+            nits_on=nits_on,
+            approves_when=approves_when,
+            overrides_text=overrides_text,
+            repo_context_text=repo_context_text,
+            file_strategy_text=file_strategy_text,
+            pr_title=pr_data.get("title", ""),
+            pr_author=pr_data.get("user", {}).get("login", "unknown"),
+            pr_description=pr_data.get("body", "") or "(no description)",
+            changed_files_count=pr_data.get("changed_files", len(chunk.files)),
+            diff_text=combined_diff,
         )
 
     def _format_priorities(self, persona: PersonaProfile) -> str:
@@ -182,7 +298,88 @@ class PromptBuilder:
             lines.append(f"- CI: {', '.join(ctx.ci_systems)}")
         if ctx.has_linting:
             lines.append(f"- Linting: {', '.join(ctx.linters)}")
+
+        # Extended repo context fields
+        if ctx.project_type and ctx.project_type != "unknown":
+            lines.append(f"- Project type: {ctx.project_type}")
+
+        if ctx.modules:
+            mod_lines = [
+                f"  - {m.path} ({m.purpose})"
+                for m in ctx.modules[:10]
+            ]
+            lines.append("- Modules:")
+            lines.extend(mod_lines)
+            if len(ctx.modules) > 10:
+                lines.append(f"  - ... and {len(ctx.modules) - 10} more")
+
+        if ctx.api_contracts:
+            contract_lines = [
+                f"  - {c.description}"
+                for c in ctx.api_contracts[:8]
+            ]
+            lines.append("- API contracts:")
+            lines.extend(contract_lines)
+            if len(ctx.api_contracts) > 8:
+                lines.append(f"  - ... and {len(ctx.api_contracts) - 8} more")
+
+        if ctx.ownership:
+            owner_lines = [
+                f"  - {o.pattern}: {', '.join(o.owners)}"
+                for o in ctx.ownership[:5]
+            ]
+            lines.append("- Code ownership:")
+            lines.extend(owner_lines)
+            if len(ctx.ownership) > 5:
+                lines.append(f"  - ... and {len(ctx.ownership) - 5} more")
+
+        if ctx.architecture_notes:
+            notes = ctx.architecture_notes[:5]
+            lines.append("- Architecture notes:")
+            for note in notes:
+                # Truncate long notes
+                truncated = note[:200] + "..." if len(note) > 200 else note
+                lines.append(f"  - {truncated}")
+
+        if ctx.import_graph_summary:
+            lines.append(f"- Import graph: {ctx.import_graph_summary[:300]}")
+
         return "\n".join(lines) + "\n\n" if lines else ""
+
+    def _format_file_strategies(self, files: list[PullRequestFile]) -> str:
+        """Format file-type-aware review strategies for changed files.
+
+        Groups files by type and generates strategy instructions for the LLM.
+
+        Args:
+            files: List of changed PR files.
+
+        Returns:
+            Formatted strategy text, or empty string if no strategies apply.
+        """
+        if not files:
+            return ""
+
+        groups = get_file_strategies(files)
+        if not groups:
+            return ""
+
+        lines = ["## File-Type Review Strategies\n"]
+        for file_type, grouped_files in sorted(groups.items()):
+            strategy = get_strategy(file_type)
+            if strategy is None:
+                continue
+            filenames = [f.filename for f in grouped_files]
+            file_list = ", ".join(filenames[:5])
+            if len(filenames) > 5:
+                file_list += f", ... (+{len(filenames) - 5} more)"
+            lines.append(
+                f"**{strategy.display_name}** ({len(filenames)} files: {file_list}):"
+            )
+            lines.append(strategy.prompt_instructions)
+            lines.append("")
+
+        return "\n".join(lines) + "\n" if len(lines) > 1 else ""
 
     def _format_overrides(self, persona: PersonaProfile) -> str:
         """Format manual override notes."""

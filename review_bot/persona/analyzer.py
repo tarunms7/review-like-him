@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
@@ -11,6 +12,21 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 from review_bot.persona.profile import PersonaProfile, Priority, SeverityPattern
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CategoryWeight:
+    """Tracks smoothed weight for a review category.
+
+    Attributes:
+        category: Category name slug.
+        current_rate: Current approval rate from feedback.
+        smoothed_rate: EMA-smoothed rate to prevent oscillation.
+    """
+
+    category: str
+    current_rate: float
+    smoothed_rate: float
 
 ANALYSIS_PROMPT_TEMPLATE = """\
 Analyze these {count} review comments from GitHub user '{github_user}'.
@@ -137,6 +153,98 @@ class PersonaAnalyzer:
         )
         return profile
 
+    async def reanalyze_with_feedback(
+        self,
+        persona_name: str,
+        feedback_store,
+    ) -> PersonaProfile | None:
+        """Load profile, get feedback summary, adjust priorities based on approval rates.
+
+        Uses EMA smoothing to prevent oscillation in priority adjustments.
+
+        Args:
+            persona_name: Name of the persona to reanalyze.
+            feedback_store: FeedbackStore instance with feedback data.
+
+        Returns:
+            Updated PersonaProfile with adjusted priorities, or None if
+            the persona profile cannot be loaded.
+        """
+        from review_bot.persona.store import PersonaStore
+
+        store = PersonaStore()
+        try:
+            profile = store.load(persona_name)
+        except FileNotFoundError:
+            logger.warning("Cannot reanalyze: persona '%s' not found", persona_name)
+            return None
+
+        summaries = await feedback_store.get_persona_feedback_summary(persona_name)
+        if not summaries:
+            logger.info("No feedback data for persona '%s', skipping reanalysis", persona_name)
+            return profile
+
+        # Build approval rates by category
+        approval_rates: dict[str, float] = {
+            s.category: s.approval_rate for s in summaries
+        }
+
+        # Adjust priority severities based on feedback
+        adjusted_priorities: list[Priority] = []
+        for priority in profile.priorities:
+            rate = approval_rates.get(priority.category)
+            if rate is None:
+                adjusted_priorities.append(priority)
+                continue
+
+            # Apply EMA smoothing
+            smoothed = _apply_ema_smoothing(rate, 0.5, alpha=0.3)
+
+            # Map smoothed rate to severity adjustment
+            new_severity = priority.severity
+            if smoothed < 0.3:
+                # Low approval → demote severity
+                severity_demotion = {
+                    "critical": "strict",
+                    "strict": "moderate",
+                    "moderate": "opinionated",
+                    "opinionated": "opinionated",
+                }
+                new_severity = severity_demotion.get(
+                    priority.severity, priority.severity
+                )
+                logger.info(
+                    "Demoting %s severity from %s to %s (approval=%.2f)",
+                    priority.category, priority.severity, new_severity, smoothed,
+                )
+            elif smoothed > 0.8:
+                # High approval → promote severity
+                severity_promotion = {
+                    "opinionated": "moderate",
+                    "moderate": "strict",
+                    "strict": "critical",
+                    "critical": "critical",
+                }
+                new_severity = severity_promotion.get(
+                    priority.severity, priority.severity
+                )
+                logger.info(
+                    "Promoting %s severity from %s to %s (approval=%.2f)",
+                    priority.category, priority.severity, new_severity, smoothed,
+                )
+
+            adjusted_priorities.append(
+                Priority(
+                    category=priority.category,
+                    severity=new_severity,
+                    description=priority.description,
+                )
+            )
+
+        profile.priorities = adjusted_priorities
+        profile.last_updated = date.today().isoformat()
+        return profile
+
     def _parse_llm_response(self, text: str) -> dict:
         """Extract JSON from LLM response text, handling markdown fences."""
         text = text.strip()
@@ -155,3 +263,21 @@ class PersonaAnalyzer:
         except json.JSONDecodeError:
             logger.error("Failed to parse LLM response as JSON: %s", text[:200])
             return {}
+
+
+def _apply_ema_smoothing(
+    current_rate: float,
+    previous_rate: float,
+    alpha: float = 0.3,
+) -> float:
+    """Apply Exponential Moving Average smoothing to prevent oscillation.
+
+    Args:
+        current_rate: Current period's approval rate.
+        previous_rate: Previous period's smoothed rate.
+        alpha: Smoothing factor (0-1). Higher = more weight on current.
+
+    Returns:
+        Smoothed rate value.
+    """
+    return alpha * current_rate + (1 - alpha) * previous_rate

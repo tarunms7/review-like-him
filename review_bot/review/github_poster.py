@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from review_bot.github.api import GitHubAPIClient, ReviewComment
-from review_bot.review.formatter import ReviewResult
+from review_bot.review.formatter import CONFIDENCE_PREFIXES, ReviewResult
 
 logger = logging.getLogger("review-bot")
 
@@ -16,12 +16,23 @@ _VERDICT_TO_EVENT: dict[str, str] = {
     "comment": "COMMENT",
 }
 
+# Confidence legend for the review footer
+_CONFIDENCE_LEGEND = (
+    "\n---\n"
+    "**Confidence:** 🔴 High · 🟡 Medium · ⚪ Low"
+)
+
 
 class ReviewPoster:
     """Takes a ReviewResult and posts it to GitHub as a PR review."""
 
-    def __init__(self, github_client: GitHubAPIClient) -> None:
+    def __init__(
+        self,
+        github_client: GitHubAPIClient,
+        feedback_store: object | None = None,
+    ) -> None:
         self._client = github_client
+        self._feedback_store = feedback_store
 
     async def post(
         self,
@@ -53,7 +64,7 @@ class ReviewPoster:
                 ReviewComment(
                     path=ic.file,
                     line=ic.line,
-                    body=ic.body,
+                    body=self._format_inline_body(ic),
                 )
                 for ic in result.inline_comments
             ]
@@ -115,16 +126,37 @@ class ReviewPoster:
         lines.append(verdict_labels.get(result.verdict, f"**{result.verdict}**"))
         lines.append("")
 
-        # Category sections
+        # Category sections with confidence prefixes
+        has_findings = False
         for section in result.summary_sections:
             lines.append(f"### {section.emoji} {section.title}")
             lines.append("")
             for finding in section.findings:
-                lines.append(f"- {finding}")
+                prefix = CONFIDENCE_PREFIXES.get(finding.confidence, "🟡")
+                lines.append(f"- {prefix} {finding.text}")
+                has_findings = True
             lines.append("")
 
         if not result.summary_sections:
             lines.append("No issues found. Looks good! 🎉")
             lines.append("")
 
+        # Add confidence legend if there are any findings
+        if has_findings:
+            lines.append(_CONFIDENCE_LEGEND)
+            lines.append("")
+
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_inline_body(ic: object) -> str:
+        """Format an inline comment body with confidence prefix.
+
+        Args:
+            ic: An InlineComment object with body and confidence fields.
+
+        Returns:
+            The formatted comment body string.
+        """
+        prefix = CONFIDENCE_PREFIXES.get(ic.confidence, "🟡")
+        return f"{prefix} {ic.body}"
