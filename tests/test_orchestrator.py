@@ -8,8 +8,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from review_bot.github.api import PullRequestFile
-from review_bot.review.formatter import ReviewResult
-from review_bot.review.orchestrator import LARGE_PR_FILE_THRESHOLD, ReviewOrchestrator
+from review_bot.review.formatter import (
+    CategorySection,
+    Finding,
+    InlineComment,
+    ReviewResult,
+)
+from review_bot.review.orchestrator import (
+    EXTREME_PR_THRESHOLD,
+    MULTI_PASS_THRESHOLD,
+    ReviewOrchestrator,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,6 +35,43 @@ def _llm_json(verdict: str = "approve") -> str:
     })
 
 
+def _make_orchestrator(
+    mock_github_client,
+    persona_store,
+    min_severity: int = 0,
+) -> ReviewOrchestrator:
+    """Create a ReviewOrchestrator with mocked internal dependencies."""
+    with patch.object(
+        ReviewOrchestrator, "__init__", lambda self, *a, **kw: None
+    ):
+        orch = ReviewOrchestrator.__new__(ReviewOrchestrator)
+        orch._github = mock_github_client
+        orch._persona_store = persona_store
+        orch._db_engine = None
+        orch._min_severity = min_severity
+        orch._scanner = MagicMock()
+        orch._scanner.scan = AsyncMock(return_value=MagicMock(
+            languages=["python"], frameworks=["fastapi"],
+        ))
+        orch._prompt_builder = MagicMock()
+        orch._prompt_builder.build = MagicMock(return_value="prompt text")
+        orch._prompt_builder.build_chunked = MagicMock(return_value="chunk prompt")
+        orch._reviewer = MagicMock()
+        orch._reviewer.review = AsyncMock(return_value=_llm_json("approve"))
+        orch._formatter = MagicMock()
+        mock_result = ReviewResult(
+            verdict="approve",
+            summary_sections=[],
+            inline_comments=[],
+            persona_name="alice",
+            pr_url="https://github.com/owner/repo/pull/42",
+        )
+        orch._formatter.format = MagicMock(return_value=mock_result)
+        orch._poster = MagicMock()
+        orch._poster.post = AsyncMock()
+        return orch
+
+
 # ---------------------------------------------------------------------------
 # End-to-end Review Flow
 # ---------------------------------------------------------------------------
@@ -40,37 +86,9 @@ class TestRunReview:
     ):
         # Persist persona so store.load works
         persona_store.save(sample_persona)
+        orch = _make_orchestrator(mock_github_client, persona_store)
 
-        with (
-            patch.object(
-                ReviewOrchestrator, "__init__", lambda self, *a, **kw: None
-            ),
-        ):
-            orch = ReviewOrchestrator.__new__(ReviewOrchestrator)
-            orch._github = mock_github_client
-            orch._persona_store = persona_store
-            orch._db_engine = None
-            orch._scanner = MagicMock()
-            orch._scanner.scan = AsyncMock(return_value=MagicMock(
-                languages=["python"], frameworks=["fastapi"],
-            ))
-            orch._prompt_builder = MagicMock()
-            orch._prompt_builder.build = MagicMock(return_value="prompt text")
-            orch._reviewer = MagicMock()
-            orch._reviewer.review = AsyncMock(return_value=_llm_json("approve"))
-            orch._formatter = MagicMock()
-            mock_result = ReviewResult(
-                verdict="approve",
-                summary_sections=[],
-                inline_comments=[],
-                persona_name="alice",
-                pr_url="https://github.com/owner/repo/pull/42",
-            )
-            orch._formatter.format = MagicMock(return_value=mock_result)
-            orch._poster = MagicMock()
-            orch._poster.post = AsyncMock()
-
-            result = await orch.run_review("owner", "repo", 42, "alice")
+        result = await orch.run_review("owner", "repo", 42, "alice")
 
         assert result.verdict == "approve"
         assert result.persona_name == "alice"
@@ -85,54 +103,30 @@ class TestRunReview:
     ):
         """If posting to GitHub fails, the review should still return a result."""
         persona_store.save(sample_persona)
+        orch = _make_orchestrator(mock_github_client, persona_store)
+        orch._poster.post = AsyncMock(side_effect=Exception("GitHub API error"))
 
-        with patch.object(
-            ReviewOrchestrator, "__init__", lambda self, *a, **kw: None
-        ):
-            orch = ReviewOrchestrator.__new__(ReviewOrchestrator)
-            orch._github = mock_github_client
-            orch._persona_store = persona_store
-            orch._db_engine = None
-            orch._scanner = MagicMock()
-            orch._scanner.scan = AsyncMock(return_value=MagicMock(
-                languages=[], frameworks=[],
-            ))
-            orch._prompt_builder = MagicMock()
-            orch._prompt_builder.build = MagicMock(return_value="prompt")
-            orch._reviewer = MagicMock()
-            orch._reviewer.review = AsyncMock(return_value=_llm_json())
-            orch._formatter = MagicMock()
-            mock_result = ReviewResult(
-                verdict="approve",
-                summary_sections=[],
-                inline_comments=[],
-                persona_name="alice",
-                pr_url="https://github.com/owner/repo/pull/42",
-            )
-            orch._formatter.format = MagicMock(return_value=mock_result)
-            orch._poster = MagicMock()
-            orch._poster.post = AsyncMock(side_effect=Exception("GitHub API error"))
-
-            result = await orch.run_review("owner", "repo", 42, "alice")
+        result = await orch.run_review("owner", "repo", 42, "alice")
 
         assert result.verdict == "approve"
 
 
 # ---------------------------------------------------------------------------
-# Large PR Handling
+# Large PR Handling (Extreme — summary only)
 # ---------------------------------------------------------------------------
 
 
-class TestLargePRHandling:
-    """Test that PRs exceeding the file threshold get summary-only reviews."""
+class TestExtremePRHandling:
+    """Test that PRs exceeding the extreme threshold get summary-only reviews."""
 
     @pytest.mark.asyncio
-    async def test_large_pr_posts_summary_comment(
+    async def test_extreme_pr_gets_summary_only(
         self, mock_github_client, sample_persona, persona_store
     ):
+        """PR with 1500+ files should get summary comment, no LLM review."""
         persona_store.save(sample_persona)
 
-        # Generate file list exceeding threshold
+        # Generate file list exceeding extreme threshold
         large_files = [
             PullRequestFile(
                 filename=f"src/file_{i}.py",
@@ -140,30 +134,168 @@ class TestLargePRHandling:
                 additions=10,
                 deletions=2,
             )
-            for i in range(LARGE_PR_FILE_THRESHOLD + 50)
+            for i in range(EXTREME_PR_THRESHOLD + 500)
         ]
         mock_github_client.get_pull_request_files = AsyncMock(return_value=large_files)
 
-        with patch.object(
-            ReviewOrchestrator, "__init__", lambda self, *a, **kw: None
-        ):
-            orch = ReviewOrchestrator.__new__(ReviewOrchestrator)
-            orch._github = mock_github_client
-            orch._persona_store = persona_store
-            orch._db_engine = None
-            orch._scanner = MagicMock()
-            orch._prompt_builder = MagicMock()
-            orch._reviewer = MagicMock()
-            orch._formatter = MagicMock()
-            orch._poster = MagicMock()
+        orch = _make_orchestrator(mock_github_client, persona_store)
 
-            result = await orch.run_review("owner", "repo", 42, "alice")
+        result = await orch.run_review("owner", "repo", 42, "alice")
 
         assert result.verdict == "comment"
         assert result.persona_name == "alice"
         mock_github_client.post_comment.assert_called_once()
-        # LLM reviewer should NOT have been called for large PRs
+        # LLM reviewer should NOT have been called for extreme PRs
         orch._reviewer.review.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Multi-pass Chunked Review
+# ---------------------------------------------------------------------------
+
+
+class TestMultipassReview:
+    """Test that large PRs (80+ files) trigger multi-pass chunked review."""
+
+    @pytest.mark.asyncio
+    async def test_multipass_triggered_for_large_pr(
+        self, mock_github_client, sample_persona, persona_store
+    ):
+        """PR with 100 files should trigger multi-pass review."""
+        persona_store.save(sample_persona)
+
+        # Generate files exceeding multi-pass threshold but below extreme
+        num_files = MULTI_PASS_THRESHOLD + 20
+        large_files = [
+            PullRequestFile(
+                filename=f"src/module_{i // 10}/file_{i}.py",
+                status="modified",
+                additions=5,
+                deletions=2,
+            )
+            for i in range(num_files)
+        ]
+        mock_github_client.get_pull_request_files = AsyncMock(
+            return_value=large_files
+        )
+
+        # Build a diff that includes all files
+        diff_parts = []
+        for f in large_files:
+            diff_parts.append(
+                f"diff --git a/{f.filename} b/{f.filename}\n"
+                f"--- a/{f.filename}\n"
+                f"+++ b/{f.filename}\n"
+                f"@@ -1,3 +1,3 @@\n"
+                f"-old line\n"
+                f"+new line\n"
+            )
+        mock_github_client.get_pull_request_diff = AsyncMock(
+            return_value="\n".join(diff_parts)
+        )
+
+        orch = _make_orchestrator(mock_github_client, persona_store)
+
+        # The reviewer will be called multiple times (once per chunk)
+        orch._reviewer.review = AsyncMock(return_value=_llm_json("comment"))
+
+        # The formatter returns a mock result for each chunk
+        chunk_result = ReviewResult(
+            verdict="comment",
+            summary_sections=[
+                CategorySection(
+                    emoji="🧪",
+                    title="Testing",
+                    findings=[Finding(text="Missing tests")],
+                ),
+            ],
+            inline_comments=[],
+            persona_name="alice",
+            pr_url="https://github.com/owner/repo/pull/42",
+        )
+        orch._formatter.format = MagicMock(return_value=chunk_result)
+
+        result = await orch.run_review("owner", "repo", 42, "alice")
+
+        # Multi-pass should call reviewer multiple times (>1)
+        assert orch._reviewer.review.call_count >= 1
+        # build_chunked should have been called instead of build
+        assert orch._prompt_builder.build_chunked.call_count >= 1
+        # The standard build should NOT have been called
+        orch._prompt_builder.build.assert_not_called()
+        # Result should be from the merged output
+        assert result.persona_name == "alice"
+
+
+# ---------------------------------------------------------------------------
+# Severity Filtering
+# ---------------------------------------------------------------------------
+
+
+class TestSeverityFiltering:
+    """Test that severity filtering is applied when min_severity > 0."""
+
+    @pytest.mark.asyncio
+    async def test_severity_filter_applied(
+        self, mock_github_client, sample_persona, persona_store
+    ):
+        """When min_severity > 0, filter_result_by_severity should be called."""
+        persona_store.save(sample_persona)
+        orch = _make_orchestrator(
+            mock_github_client, persona_store, min_severity=2
+        )
+
+        # Create a result with low-confidence style findings that should be filtered
+        mock_result = ReviewResult(
+            verdict="comment",
+            summary_sections=[
+                CategorySection(
+                    emoji="💅",
+                    title="Style",
+                    findings=[
+                        Finding(text="Use snake_case", confidence="low"),
+                    ],
+                ),
+            ],
+            inline_comments=[],
+            persona_name="alice",
+            pr_url="https://github.com/owner/repo/pull/42",
+        )
+        orch._formatter.format = MagicMock(return_value=mock_result)
+
+        with patch(
+            "review_bot.review.orchestrator.filter_result_by_severity"
+        ) as mock_filter:
+            # filter should return a filtered version
+            filtered_result = ReviewResult(
+                verdict="approve",
+                summary_sections=[],
+                inline_comments=[],
+                persona_name="alice",
+                pr_url="https://github.com/owner/repo/pull/42",
+            )
+            mock_filter.return_value = filtered_result
+
+            result = await orch.run_review("owner", "repo", 42, "alice")
+
+            mock_filter.assert_called_once_with(mock_result, 2)
+            assert result.verdict == "approve"
+
+    @pytest.mark.asyncio
+    async def test_severity_filter_not_applied_when_zero(
+        self, mock_github_client, sample_persona, persona_store
+    ):
+        """When min_severity is 0, filter should not be called."""
+        persona_store.save(sample_persona)
+        orch = _make_orchestrator(
+            mock_github_client, persona_store, min_severity=0
+        )
+
+        with patch(
+            "review_bot.review.orchestrator.filter_result_by_severity"
+        ) as mock_filter:
+            await orch.run_review("owner", "repo", 42, "alice")
+            mock_filter.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -211,18 +343,7 @@ class TestPersonaLoading:
     async def test_missing_persona_raises(
         self, mock_github_client, persona_store
     ):
-        with patch.object(
-            ReviewOrchestrator, "__init__", lambda self, *a, **kw: None
-        ):
-            orch = ReviewOrchestrator.__new__(ReviewOrchestrator)
-            orch._github = mock_github_client
-            orch._persona_store = persona_store
-            orch._db_engine = None
-            orch._scanner = MagicMock()
-            orch._prompt_builder = MagicMock()
-            orch._reviewer = MagicMock()
-            orch._formatter = MagicMock()
-            orch._poster = MagicMock()
+        orch = _make_orchestrator(mock_github_client, persona_store)
 
-            with pytest.raises(FileNotFoundError):
-                await orch.run_review("owner", "repo", 42, "nonexistent")
+        with pytest.raises(FileNotFoundError):
+            await orch.run_review("owner", "repo", 42, "nonexistent")
