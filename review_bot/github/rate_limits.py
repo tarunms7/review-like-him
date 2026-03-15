@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class RateLimitTracker:
                 used=int(used) if used is not None else 0,
                 reset=int(reset) if reset is not None else 0,
                 last_updated=datetime.now(
-                    timezone.utc
+                    UTC
                 ).replace(microsecond=0).isoformat(),
             )
         except (ValueError, TypeError):
