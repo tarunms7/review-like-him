@@ -222,6 +222,7 @@ class RepoContext(BaseModel):
     architecture_notes: list[str] = Field(default_factory=list)
     project_type: str = Field(default="unknown")
     import_graph_summary: str = Field(default="")
+    repo_config: dict = Field(default_factory=dict)
 
 
 class RepoScanner:
@@ -318,6 +319,12 @@ class RepoScanner:
 
         project_type = self._detect_project_type(root_contents, modules)
 
+        try:
+            repo_config = await self._read_repo_config(owner, repo) or {}
+        except Exception:
+            logger.warning("Failed to read repo config for %s/%s", owner, repo)
+            repo_config = {}
+
         return RepoContext(
             languages=sorted(set(languages)),
             frameworks=sorted(set(frameworks)),
@@ -333,6 +340,7 @@ class RepoScanner:
             architecture_notes=architecture_notes,
             project_type=project_type,
             import_graph_summary=import_graph_summary,
+            repo_config=repo_config,
         )
 
     # ------------------------------------------------------------------

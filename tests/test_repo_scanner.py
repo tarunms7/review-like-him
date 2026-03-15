@@ -601,6 +601,7 @@ class TestRepoContextBackwardCompat:
         assert ctx.architecture_notes == []
         assert ctx.project_type == "unknown"
         assert ctx.import_graph_summary == ""
+        assert ctx.repo_config == {}
 
     def test_original_fields_preserved(self) -> None:
         """Original fields still work as before."""
@@ -675,3 +676,38 @@ class TestScanIntegration:
         assert len(ctx.architecture_notes) >= 1
         assert "Layered design" in ctx.architecture_notes[0]
         assert ctx.project_type == "microservice"  # Dockerfile + small modules
+        # No .review-like-him.yml, so repo_config should be empty dict
+        assert ctx.repo_config == {}
+
+    @pytest.mark.asyncio()
+    async def test_scan_populates_repo_config(
+        self, mock_github_client,
+    ) -> None:
+        """Verify scan() populates repo_config when .review-like-him.yml exists."""
+        config_yaml = "min_severity: 2\nexclude_paths:\n  - 'vendor/**'\n"
+        root_contents = [
+            _dir_entry("pyproject.toml"),
+            _dir_entry(".review-like-him.yml"),
+        ]
+
+        async def mock_get_contents(owner, repo, path):
+            if path == "":
+                return root_contents
+            if path == "pyproject.toml":
+                return {"content": _b64("[project]\nname = 'myapp'\n")}
+            if path == ".review-like-him.yml":
+                return {"content": _b64(config_yaml)}
+            raise httpx.HTTPStatusError(
+                "Not Found",
+                request=httpx.Request("GET", "https://api.github.com"),
+                response=httpx.Response(404),
+            )
+
+        mock_github_client.get_repo_contents = AsyncMock(
+            side_effect=mock_get_contents,
+        )
+
+        scanner = RepoScanner(mock_github_client)
+        ctx = await scanner.scan("owner", "repo")
+
+        assert ctx.repo_config == {"min_severity": 2, "exclude_paths": ["vendor/**"]}

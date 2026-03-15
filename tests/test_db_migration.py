@@ -85,6 +85,42 @@ async def _make_sqlite_engine(tmp_path, *, populate: bool = False):
                     "lr": "2025-12-01T10:00:00Z",
                 },
             )
+            await conn.execute(
+                text(
+                    "INSERT INTO review_comment_tracking "
+                    "(comment_id, review_id, persona_name, repo, pr_number, "
+                    "file_path, line_number, body, category, posted_at) "
+                    "VALUES (:cid, :rid, :pn, :repo, :pr, :fp, :ln, :body, :cat, :pa)"
+                ),
+                {
+                    "cid": 999,
+                    "rid": "review-abc",
+                    "pn": "alice",
+                    "repo": "owner/repo",
+                    "pr": 42,
+                    "fp": "src/main.py",
+                    "ln": 10,
+                    "body": "Consider renaming this variable.",
+                    "cat": "naming",
+                    "pa": "2025-12-01T10:01:00Z",
+                },
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO review_feedback "
+                    "(comment_id, feedback_type, feedback_source, "
+                    "reactor_username, is_pr_author, created_at) "
+                    "VALUES (:cid, :ft, :fs, :ru, :ipa, :ca)"
+                ),
+                {
+                    "cid": 999,
+                    "ft": "reaction",
+                    "fs": "github_reaction",
+                    "ru": "bob",
+                    "ipa": 1,
+                    "ca": "2025-12-01T10:05:00Z",
+                },
+            )
 
     return engine
 
@@ -190,6 +226,8 @@ async def test_export_sqlite_data_empty_tables(tmp_path):
         assert data["reviews"] == []
         assert data["jobs"] == []
         assert data["persona_stats"] == []
+        assert data["review_comment_tracking"] == []
+        assert data["review_feedback"] == []
     finally:
         await engine.dispose()
 
@@ -210,6 +248,11 @@ async def test_export_sqlite_data_with_rows(tmp_path):
         assert data["jobs"][0]["id"] == "job-001"
         assert len(data["persona_stats"]) == 1
         assert data["persona_stats"][0]["total_reviews"] == 10
+        assert len(data["review_comment_tracking"]) == 1
+        assert data["review_comment_tracking"][0]["comment_id"] == 999
+        assert data["review_comment_tracking"][0]["category"] == "naming"
+        assert len(data["review_feedback"]) == 1
+        assert data["review_feedback"][0]["reactor_username"] == "bob"
     finally:
         await engine.dispose()
 
@@ -261,7 +304,13 @@ async def test_import_empty_data(tmp_path):
 
     try:
         counts = await import_to_postgresql(target, {})
-        assert counts == {"reviews": 0, "jobs": 0, "persona_stats": 0}
+        assert counts == {
+            "reviews": 0,
+            "jobs": 0,
+            "persona_stats": 0,
+            "review_comment_tracking": 0,
+            "review_feedback": 0,
+        }
     finally:
         await target.dispose()
 
@@ -479,3 +528,79 @@ async def test_timestamp_format_preservation(tmp_path):
     finally:
         await source.dispose()
         await target.dispose()
+
+
+# ── 21. Feedback tables exported ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_export_feedback_tables(tmp_path):
+    """review_comment_tracking and review_feedback are exported."""
+    engine = await _make_sqlite_engine(tmp_path, populate=True)
+    try:
+        data = await export_sqlite_data(engine)
+        assert "review_comment_tracking" in data
+        assert "review_feedback" in data
+        assert len(data["review_comment_tracking"]) == 1
+        assert data["review_comment_tracking"][0]["review_id"] == "review-abc"
+        assert len(data["review_feedback"]) == 1
+        assert data["review_feedback"][0]["feedback_type"] == "reaction"
+    finally:
+        await engine.dispose()
+
+
+# ── 22. Feedback tables import idempotent ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_import_feedback_tables_idempotent(tmp_path):
+    """Importing feedback tables twice produces no duplicates."""
+    source = await _make_sqlite_engine(tmp_path / "src", populate=True)
+    target_path = tmp_path / "tgt" / "target.db"
+    target_path.parent.mkdir(parents=True)
+    target = create_async_engine(f"sqlite+aiosqlite:///{target_path}", echo=False)
+    await init_database(target, "sqlite")
+
+    try:
+        data = await export_sqlite_data(source)
+
+        await import_to_postgresql(target, data)
+        await import_to_postgresql(target, data)
+
+        async with target.connect() as conn:
+            result = await conn.execute(
+                text("SELECT COUNT(*) FROM review_comment_tracking")
+            )
+            assert result.scalar() == 1
+
+            result = await conn.execute(
+                text("SELECT COUNT(*) FROM review_feedback")
+            )
+            assert result.scalar() == 1
+    finally:
+        await source.dispose()
+        await target.dispose()
+
+
+# ── 23. _TABLE_NAMES includes feedback tables ────────────────────────────
+
+
+def test_table_names_includes_feedback_tables():
+    """_TABLE_NAMES tuple covers both feedback tables."""
+    from review_bot.db.migration import _TABLE_NAMES
+
+    assert "review_comment_tracking" in _TABLE_NAMES
+    assert "review_feedback" in _TABLE_NAMES
+
+
+# ── 24. Feedback table DDL in both backends ──────────────────────────────
+
+
+def test_feedback_table_ddl_in_both_backends():
+    """Both SQLite and PostgreSQL DDL lists include feedback tables."""
+    sqlite_combined = "\n".join(_CREATE_TABLES_SQLITE)
+    pg_combined = "\n".join(_CREATE_TABLES_POSTGRESQL)
+
+    for ddl in (sqlite_combined, pg_combined):
+        assert "review_comment_tracking" in ddl
+        assert "review_feedback" in ddl

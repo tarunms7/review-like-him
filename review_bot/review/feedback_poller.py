@@ -22,7 +22,7 @@ REACTION_FEEDBACK: dict[str, str] = {
     "heart": "positive",
     "hooray": "positive",
     "rocket": "positive",
-    "laugh": "positive",
+    "laugh": "neutral",
     "-1": "negative",
     "confused": "confused",
     "eyes": "neutral",
@@ -142,6 +142,7 @@ class FeedbackPoller:
 
             owner, repo_name = parts
             comment_id = comment["comment_id"]
+            pr_author = comment.get("pr_author", "")
 
             reactions = await self.poll_reactions_for_comment(
                 owner, repo_name, comment_id
@@ -176,7 +177,7 @@ class FeedbackPoller:
                     feedback_type=feedback_type,
                     feedback_source="reaction",
                     reactor_username=username,
-                    is_pr_author=False,  # Cannot determine from reaction alone
+                    is_pr_author=bool(pr_author and username == pr_author),
                 )
                 await self._feedback_store.record_feedback(event)
                 total_new += 1

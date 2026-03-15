@@ -15,9 +15,11 @@ from review_bot.review.formatter import (
 )
 from review_bot.review.orchestrator import (
     EXTREME_PR_THRESHOLD,
+    LARGE_PR_FILE_THRESHOLD,
     MULTI_PASS_THRESHOLD,
     ReviewOrchestrator,
 )
+from review_bot.review.prompt_builder import MAX_DIFF_CHARS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,9 +51,11 @@ def _make_orchestrator(
         orch._db_engine = None
         orch._min_severity = min_severity
         orch._scanner = MagicMock()
-        orch._scanner.scan = AsyncMock(return_value=MagicMock(
-            languages=["python"], frameworks=["fastapi"],
-        ))
+        mock_repo_ctx = MagicMock(
+            languages=["python"], frameworks=["fastapi"], repo_config={},
+        )
+        mock_repo_ctx.repo_config = {}
+        orch._scanner.scan = AsyncMock(return_value=mock_repo_ctx)
         orch._prompt_builder = MagicMock()
         orch._prompt_builder.build = MagicMock(return_value="prompt text")
         orch._prompt_builder.build_chunked = MagicMock(return_value="chunk prompt")
@@ -346,3 +350,164 @@ class TestPersonaLoading:
 
         with pytest.raises(FileNotFoundError):
             await orch.run_review("owner", "repo", 42, "nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# Backward Compatibility Constants
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompatConstants:
+    """Verify backward-compatible constants are exported."""
+
+    def test_large_pr_file_threshold_exists(self):
+        assert LARGE_PR_FILE_THRESHOLD == 500
+
+
+# ---------------------------------------------------------------------------
+# Diff-Size Multi-Pass Trigger
+# ---------------------------------------------------------------------------
+
+
+class TestDiffSizeMultipass:
+    """Test that large diffs (even with few files) trigger multi-pass."""
+
+    @pytest.mark.asyncio
+    async def test_large_diff_triggers_multipass(
+        self, mock_github_client, sample_persona, persona_store
+    ):
+        """A diff exceeding MAX_DIFF_CHARS * 2 should trigger multi-pass."""
+        persona_store.save(sample_persona)
+
+        # Only a few files (below MULTI_PASS_THRESHOLD) but huge diff
+        small_files = [
+            PullRequestFile(
+                filename=f"src/big_{i}.py",
+                status="modified",
+                additions=100,
+                deletions=50,
+            )
+            for i in range(5)
+        ]
+        mock_github_client.get_pull_request_files = AsyncMock(
+            return_value=small_files
+        )
+
+        # Build a diff that exceeds MAX_DIFF_CHARS * 2
+        huge_diff = "x" * (MAX_DIFF_CHARS * 2 + 1)
+        mock_github_client.get_pull_request_diff = AsyncMock(
+            return_value=huge_diff
+        )
+
+        orch = _make_orchestrator(mock_github_client, persona_store)
+        orch._reviewer.review = AsyncMock(return_value=_llm_json("comment"))
+
+        chunk_result = ReviewResult(
+            verdict="comment",
+            summary_sections=[],
+            inline_comments=[],
+            persona_name="alice",
+            pr_url="https://github.com/owner/repo/pull/42",
+        )
+        orch._formatter.format = MagicMock(return_value=chunk_result)
+
+        # Mock DiffChunker to return 2 chunks so build_chunked is used
+        chunk_a = MagicMock(
+            chunk_id="chunk-1",
+            label="group-a",
+            diff_text="diff a",
+            files=small_files[:3],
+        )
+        chunk_b = MagicMock(
+            chunk_id="chunk-2",
+            label="group-b",
+            diff_text="diff b",
+            files=small_files[3:],
+        )
+        mock_chunking = MagicMock(
+            chunks=[chunk_a, chunk_b],
+            skipped_files=[],
+        )
+
+        with patch(
+            "review_bot.review.orchestrator.DiffChunker"
+        ) as mock_chunker:
+            mock_chunker.return_value.chunk.return_value = mock_chunking
+            result = await orch.run_review("owner", "repo", 42, "alice")
+
+        assert result.persona_name == "alice"
+        # Diff-size condition triggered multi-pass: build_chunked must be called
+        orch._prompt_builder.build_chunked.assert_called()
+        orch._prompt_builder.build.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Single-Chunk Fallback
+# ---------------------------------------------------------------------------
+
+
+class TestSingleChunkFallback:
+    """Test that a single chunk after partitioning falls back to single-pass."""
+
+    @pytest.mark.asyncio
+    async def test_single_chunk_uses_single_pass(
+        self, mock_github_client, sample_persona, persona_store
+    ):
+        """If chunking produces 1 chunk, use normal build() not build_chunked()."""
+        persona_store.save(sample_persona)
+
+        # Enough files to trigger multi-pass
+        num_files = MULTI_PASS_THRESHOLD + 5
+        large_files = [
+            PullRequestFile(
+                filename=f"src/file_{i}.py",
+                status="modified",
+                additions=5,
+                deletions=2,
+            )
+            for i in range(num_files)
+        ]
+        mock_github_client.get_pull_request_files = AsyncMock(
+            return_value=large_files
+        )
+        mock_github_client.get_pull_request_diff = AsyncMock(
+            return_value="diff --git a/f.py b/f.py\n-old\n+new"
+        )
+
+        orch = _make_orchestrator(mock_github_client, persona_store)
+        orch._reviewer.review = AsyncMock(return_value=_llm_json("approve"))
+
+        single_result = ReviewResult(
+            verdict="approve",
+            summary_sections=[],
+            inline_comments=[],
+            persona_name="alice",
+            pr_url="https://github.com/owner/repo/pull/42",
+        )
+        orch._formatter.format = MagicMock(return_value=single_result)
+
+        # Patch DiffChunker to return exactly 1 chunk
+        single_chunk = MagicMock(
+            chunk_id="chunk-1",
+            label="all-files",
+            diff_text="diff --git a/f.py b/f.py\n-old\n+new",
+            files=large_files,
+        )
+        mock_chunking = MagicMock(
+            chunks=[single_chunk],
+            skipped_files=[],
+        )
+
+        with patch(
+            "review_bot.review.orchestrator.DiffChunker"
+        ) as mock_chunker:
+            mock_chunker.return_value.chunk.return_value = mock_chunking
+
+            result = await orch.run_review("owner", "repo", 42, "alice")
+
+        assert result.verdict == "approve"
+        # Single chunk → should use build(), NOT build_chunked()
+        orch._prompt_builder.build.assert_called_once()
+        orch._prompt_builder.build_chunked.assert_not_called()
+        # Reviewer should be called exactly once (single-pass)
+        orch._reviewer.review.assert_called_once()
