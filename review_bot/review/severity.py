@@ -210,22 +210,26 @@ def _recompute_verdict(
     Returns:
         The recomputed verdict string.
     """
-    has_findings = bool(sections) or bool(inline_comments)
-
-    if not has_findings:
+    if original_verdict == "approve":
         return "approve"
 
-    # Never upgrade: if original was 'comment', don't go to 'request_changes'
-    # If original was 'approve', keep approve (shouldn't happen but be safe)
-    verdict_rank = {"approve": 0, "comment": 1, "request_changes": 2}
-    original_rank = verdict_rank.get(original_verdict, 1)
+    if not sections and not inline_comments:
+        return "approve"
 
-    # Compute what the new findings warrant
-    # If we still have findings, at minimum it's a 'comment'
-    new_rank = 1  # comment
+    # A section is blocking if its category severity is >= 3 (Bugs, Security)
+    has_blocking = any(CATEGORY_SEVERITY.get(s.title, 2) >= 3 for s in sections)
 
-    # Only keep original if it was same or lower
-    return original_verdict if original_rank <= new_rank else "comment"
+    if has_blocking:
+        # Never upgrade: 'comment' stays 'comment' even with blocking findings
+        if original_verdict == "request_changes":
+            return "request_changes"
+        return "comment"
+
+    # Non-blocking findings only warrant a comment at most
+    if original_verdict in ("request_changes", "comment"):
+        return "comment"
+
+    return original_verdict
 
 
 def filter_result_by_severity(

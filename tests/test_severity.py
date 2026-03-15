@@ -15,6 +15,7 @@ from review_bot.review.formatter import (
 from review_bot.review.severity import (
     _infer_comment_category,
     _is_critical_security,
+    _recompute_verdict,
     compute_finding_severity,
     filter_result_by_severity,
 )
@@ -80,6 +81,75 @@ class TestComputeFindingSeverity:
         """Default confidence=medium, file_type=unknown."""
         result = compute_finding_severity("Bugs")
         assert result == 3
+
+
+class TestRecomputeVerdict:
+    """Tests for _recompute_verdict function."""
+
+    def test_approve_stays_approve_with_remaining_findings(self) -> None:
+        """Original 'approve' verdict is never changed, even with remaining findings."""
+        section = CategorySection(
+            emoji="🔒",
+            title="Security",
+            findings=[Finding(text="Auth issue", confidence="high")],
+        )
+        result = _recompute_verdict("approve", [section], [])
+        assert result == "approve"
+
+    def test_request_changes_downgrades_to_comment_non_blocking(self) -> None:
+        """request_changes downgrades to comment when only non-blocking findings remain."""
+        section = CategorySection(
+            emoji="🏗️",
+            title="Architecture",
+            findings=[Finding(text="Design concern", confidence="medium")],
+        )
+        result = _recompute_verdict("request_changes", [section], [])
+        assert result == "comment"
+
+    def test_request_changes_stays_with_blocking_findings(self) -> None:
+        """request_changes stays when blocking findings (CATEGORY_SEVERITY >= 3) remain."""
+        section = CategorySection(
+            emoji="🐛",
+            title="Bugs",
+            findings=[Finding(text="Null pointer dereference", confidence="high")],
+        )
+        result = _recompute_verdict("request_changes", [section], [])
+        assert result == "request_changes"
+
+    def test_comment_stays_comment_with_blocking_findings(self) -> None:
+        """'comment' verdict is never upgraded to request_changes even with blocking findings."""
+        section = CategorySection(
+            emoji="🔒",
+            title="Security",
+            findings=[Finding(text="Missing auth", confidence="high")],
+        )
+        result = _recompute_verdict("comment", [section], [])
+        assert result == "comment"
+
+    def test_no_findings_returns_approve(self) -> None:
+        """When no sections or inline comments remain, verdict is approve."""
+        result = _recompute_verdict("request_changes", [], [])
+        assert result == "approve"
+
+    def test_security_section_is_blocking(self) -> None:
+        """Security (severity 4) is treated as blocking."""
+        section = CategorySection(
+            emoji="🔒",
+            title="Security",
+            findings=[Finding(text="Vuln", confidence="medium")],
+        )
+        result = _recompute_verdict("request_changes", [section], [])
+        assert result == "request_changes"
+
+    def test_style_section_is_non_blocking(self) -> None:
+        """Style (severity 1) is not blocking, so request_changes downgrades."""
+        section = CategorySection(
+            emoji="💅",
+            title="Style",
+            findings=[Finding(text="Naming", confidence="medium")],
+        )
+        result = _recompute_verdict("request_changes", [section], [])
+        assert result == "comment"
 
 
 class TestFilterResultBySeverity:
