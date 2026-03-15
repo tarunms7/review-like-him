@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     )
     host: str = Field(default="0.0.0.0", description="Server bind host")
     port: int = Field(default=8000, description="Server bind port")
+    shutdown_drain_timeout: int = Field(
+        default=30,
+        description="Seconds to wait for in-flight jobs to complete during shutdown",
+    )
+
 
     @field_validator("github_app_id")
     @classmethod
@@ -44,6 +49,14 @@ class Settings(BaseSettings):
         """App ID must be positive when set (0 means unconfigured)."""
         if v < 0:
             raise ValueError("github_app_id must be >= 0")
+        return v
+
+    @field_validator("shutdown_drain_timeout")
+    @classmethod
+    def _validate_shutdown_drain_timeout(cls, v: int) -> int:
+        """Shutdown drain timeout must be non-negative."""
+        if v < 0:
+            raise ValueError("shutdown_drain_timeout must be >= 0")
         return v
 
     @field_validator("port")
