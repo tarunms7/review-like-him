@@ -363,6 +363,8 @@ async def _handle_review_dismissed(data: dict) -> None:
 
     from review_bot.review.feedback import FeedbackEvent
 
+    review = data.get("review", {})
+
     # We don't have direct access to review comments from the dismissed event,
     # but we record a feedback event for the review ID if available
     review_id = str(review.get("id", ""))
