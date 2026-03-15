@@ -87,7 +87,11 @@ def mock_github_auth():
     """Create a mock GitHubAppAuth."""
     auth = MagicMock()
     auth._app_id = "123456"
-    auth._token_cache = {1: ("token", 9999999999.0), 2: ("token2", 9999999999.0), 3: ("token3", 9999999999.0)}
+    auth._token_cache = {
+        1: ("token", 9999999999.0),
+        2: ("token2", 9999999999.0),
+        3: ("token3", 9999999999.0),
+    }
     return auth
 
 
@@ -432,7 +436,9 @@ class TestHealthEndpoint:
                 assert "detail" in check
 
     @pytest.mark.asyncio()
-    async def test_health_db_down_returns_503(self, mock_engine_failing, mock_job_queue, mock_github_auth):
+    async def test_health_db_down_returns_503(
+        self, mock_engine_failing, mock_job_queue, mock_github_auth,
+    ):
         """DB check raising OperationalError → 503."""
         set_start_time()
         app = _create_test_app(
