@@ -17,6 +17,8 @@ from review_bot.review.orchestrator import ReviewOrchestrator
 
 logger = logging.getLogger("review-bot")
 
+MULTI_REVIEW_DELAY_SECONDS: float = 2.0
+
 
 class ReviewJob:
     """A queued review job for the async worker to process."""
@@ -93,11 +95,21 @@ class AsyncJobQueue:
         """
         return self._current_job_id
 
-    async def enqueue(self, job: ReviewJob) -> str:
+    async def enqueue(self, job: ReviewJob) -> str | None:
         """Add a review job to the queue and persist status.
 
-        Returns the job ID.
+        Returns the job ID, or None if the job is a duplicate.
         """
+        if await self._is_duplicate(job):
+            logger.info(
+                "Skipping duplicate job: %s/%s#%d as '%s'",
+                job.owner,
+                job.repo,
+                job.pr_number,
+                job.persona_name,
+            )
+            return None
+
         await self._persist_job(job)
         await self._queue.put(job)
         logger.info(
@@ -109,6 +121,30 @@ class AsyncJobQueue:
             job.persona_name,
         )
         return job.id
+
+    async def _is_duplicate(self, job: ReviewJob) -> bool:
+        """Check if a matching job is already queued or running."""
+        try:
+            async with self._db_engine.begin() as conn:
+                result = await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM jobs "
+                        "WHERE owner = :owner AND repo = :repo "
+                        "AND pr_number = :pr AND persona_name = :persona "
+                        "AND status IN ('queued', 'running')"
+                    ),
+                    {
+                        "owner": job.owner,
+                        "repo": job.repo,
+                        "pr": job.pr_number,
+                        "persona": job.persona_name,
+                    },
+                )
+                count = result.scalar() or 0
+                return count > 0
+        except Exception:
+            logger.exception("Failed to check duplicate for job %s", job.id)
+            return False
 
     async def start_worker(self) -> None:
         """Start the background worker loop."""
@@ -206,8 +242,33 @@ class AsyncJobQueue:
                     logger.exception("Failed to post error comment for job %s", job.id)
 
             await self._update_job_status(job)
+
+            # Delay between reviews targeting the same PR to avoid rate limits
+            await self._delay_if_same_pr(job)
         finally:
             self._current_job_id = None
+
+    async def _delay_if_same_pr(self, job: ReviewJob) -> None:
+        """Sleep briefly if the next queued job targets the same PR."""
+        try:
+            # Peek at the next job without removing it
+            next_job = self._queue._queue[0] if not self._queue.empty() else None
+            if (
+                next_job is not None
+                and next_job.owner == job.owner
+                and next_job.repo == job.repo
+                and next_job.pr_number == job.pr_number
+            ):
+                logger.debug(
+                    "Next job targets same PR %s/%s#%d, delaying %.1fs",
+                    job.owner,
+                    job.repo,
+                    job.pr_number,
+                    MULTI_REVIEW_DELAY_SECONDS,
+                )
+                await asyncio.sleep(MULTI_REVIEW_DELAY_SECONDS)
+        except Exception:
+            pass  # Non-critical, skip delay on any error
 
     async def _persist_job(self, job: ReviewJob) -> None:
         """Insert a new job record into the database."""

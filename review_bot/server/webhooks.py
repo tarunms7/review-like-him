@@ -15,6 +15,8 @@ logger = logging.getLogger("review-bot")
 
 router = APIRouter()
 
+MAX_PERSONAS_PER_PR: int = 5
+
 # Module-level references set during app startup
 _job_queue: AsyncJobQueue | None = None
 _webhook_secret: str = ""
@@ -138,35 +140,92 @@ async def webhook_handler(
     return {"status": "ok"}
 
 
+async def _deduplicated_enqueue(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    persona_names: list[str],
+    installation_id: int,
+) -> list[str]:
+    """Deduplicate and enqueue reviews for multiple personas.
+
+    Skips duplicate persona names within a single event, enforces the
+    MAX_PERSONAS_PER_PR limit, checks persona existence, and enqueues
+    valid personas.
+
+    Returns:
+        List of persona names that were actually enqueued.
+    """
+    seen: set[str] = set()
+    enqueued: list[str] = []
+
+    for persona_name in persona_names:
+        if persona_name in seen:
+            logger.debug("Skipping duplicate persona '%s' in same event", persona_name)
+            continue
+        seen.add(persona_name)
+
+        if len(enqueued) >= MAX_PERSONAS_PER_PR:
+            logger.warning(
+                "MAX_PERSONAS_PER_PR (%d) reached for %s/%s#%d, skipping '%s'",
+                MAX_PERSONAS_PER_PR,
+                owner,
+                repo,
+                pr_number,
+                persona_name,
+            )
+            continue
+
+        if not await _persona_exists(persona_name):
+            await _post_persona_not_found(
+                owner, repo, pr_number, installation_id, persona_name
+            )
+            continue
+
+        await _enqueue_review(owner, repo, pr_number, persona_name, installation_id)
+        enqueued.append(persona_name)
+
+    return enqueued
+
+
 async def _handle_review_requested(data: dict) -> None:
     """Handle pull_request review_requested events.
 
     Maps the requested reviewer's bot username to a persona and queues
-    a review job.
+    a review job. Also checks all requested_reviewers on the PR for
+    multiple bot reviewers.
     """
     pr = data.get("pull_request", {})
     repo = data.get("repository", {})
     installation = data.get("installation", {})
 
-    requested_reviewer = data.get("requested_reviewer", {})
-    bot_username = requested_reviewer.get("login", "")
-
-    persona_name = _bot_username_to_persona(bot_username)
-    if not persona_name:
-        logger.warning("Could not map bot username '%s' to persona", bot_username)
-        return
-
     owner, repo_name = _extract_owner_repo(repo)
     pr_number = pr.get("number", 0)
     installation_id = installation.get("id", 0)
 
-    if not await _persona_exists(persona_name):
-        await _post_persona_not_found(
-            owner, repo_name, pr_number, installation_id, persona_name
-        )
+    persona_names: list[str] = []
+
+    # Single requested reviewer from the event
+    requested_reviewer = data.get("requested_reviewer", {})
+    bot_username = requested_reviewer.get("login", "")
+    persona_name = _bot_username_to_persona(bot_username)
+    if persona_name:
+        persona_names.append(persona_name)
+
+    # Also check all requested_reviewers on the PR itself
+    for reviewer in pr.get("requested_reviewers", []):
+        login = reviewer.get("login", "")
+        mapped = _bot_username_to_persona(login)
+        if mapped and mapped not in persona_names:
+            persona_names.append(mapped)
+
+    if not persona_names:
+        logger.warning("Could not map bot username '%s' to persona", bot_username)
         return
 
-    await _enqueue_review(owner, repo_name, pr_number, persona_name, installation_id)
+    await _deduplicated_enqueue(
+        owner, repo_name, pr_number, persona_names, installation_id
+    )
 
 
 async def _handle_issue_comment(data: dict) -> None:
@@ -192,46 +251,53 @@ async def _handle_issue_comment(data: dict) -> None:
     pr_number = issue.get("number", 0)
     installation_id = installation.get("id", 0)
 
-    for persona_name in personas:
-        if not await _persona_exists(persona_name):
-            await _post_persona_not_found(
-                owner, repo_name, pr_number, installation_id, persona_name
-            )
-            continue
-        await _enqueue_review(
-            owner, repo_name, pr_number, persona_name, installation_id
-        )
+    await _deduplicated_enqueue(
+        owner, repo_name, pr_number, personas, installation_id
+    )
 
 
 async def _handle_label_event(data: dict) -> None:
     """Handle pull_request labeled events.
 
-    Detects 'review:<name>' labels and queues review for the persona.
+    Checks all 'review:<name>' labels on the PR and queues reviews
+    for each corresponding persona via deduplicated enqueue.
     """
     label = data.get("label", {})
     pr = data.get("pull_request", {})
     repo = data.get("repository", {})
     installation = data.get("installation", {})
 
+    # Only trigger on review: labels
     label_name = label.get("name", "")
     if not label_name.startswith("review:"):
-        return
-
-    persona_name = label_name.removeprefix("review:").strip()
-    if not persona_name:
         return
 
     owner, repo_name = _extract_owner_repo(repo)
     pr_number = pr.get("number", 0)
     installation_id = installation.get("id", 0)
 
-    if not await _persona_exists(persona_name):
-        await _post_persona_not_found(
-            owner, repo_name, pr_number, installation_id, persona_name
-        )
+    # Collect all review: labels on the PR (includes the newly added one)
+    persona_names: list[str] = []
+    all_labels = pr.get("labels", [])
+
+    # Ensure the triggering label is included even if not yet in pr.labels
+    seen_label_names = {lbl.get("name", "") for lbl in all_labels}
+    if label_name not in seen_label_names:
+        all_labels = [*all_labels, label]
+
+    for lbl in all_labels:
+        name = lbl.get("name", "")
+        if name.startswith("review:"):
+            persona = name.removeprefix("review:").strip()
+            if persona:
+                persona_names.append(persona)
+
+    if not persona_names:
         return
 
-    await _enqueue_review(owner, repo_name, pr_number, persona_name, installation_id)
+    await _deduplicated_enqueue(
+        owner, repo_name, pr_number, persona_names, installation_id
+    )
 
 
 def _extract_owner_repo(repo_data: dict) -> tuple[str, str]:
