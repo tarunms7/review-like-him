@@ -14,6 +14,7 @@ from review_bot.persona.profile import PersonaProfile, Priority, SeverityPattern
 from review_bot.persona.store import PersonaStore
 from review_bot.review.formatter import (
     CategorySection,
+    Finding,
     InlineComment,
     ReviewResult,
 )
@@ -198,12 +199,23 @@ def mock_claude_output() -> str:
             {
                 "emoji": "🔒",
                 "title": "Security",
-                "findings": ["Hard-coded secret in jwt.decode"],
+                "findings": [
+                    {
+                        "text": "Hard-coded secret in jwt.decode",
+                        "confidence": "high",
+                        "confidence_reason": "Direct secret visible in source",
+                    },
+                ],
             },
             {
                 "emoji": "🧪",
                 "title": "Testing",
-                "findings": ["No tests for auth module"],
+                "findings": [
+                    {
+                        "text": "No tests for auth module",
+                        "confidence": "medium",
+                    },
+                ],
             },
         ],
         "inline_comments": [
@@ -211,6 +223,8 @@ def mock_claude_output() -> str:
                 "file": "src/auth.py",
                 "line": 4,
                 "body": "Don't hard-code secrets — use env vars.",
+                "confidence": "high",
+                "confidence_reason": "Secret is plaintext in source code",
             },
         ],
     })
@@ -230,11 +244,22 @@ def sample_review_result() -> ReviewResult:
             CategorySection(
                 emoji="🔒",
                 title="Security",
-                findings=["Hard-coded secret in jwt.decode"],
+                findings=[
+                    Finding(
+                        text="Hard-coded secret in jwt.decode",
+                        confidence="high",
+                    ),
+                ],
             ),
         ],
         inline_comments=[
-            InlineComment(file="src/auth.py", line=4, body="Use env vars for secrets."),
+            InlineComment(
+                file="src/auth.py",
+                line=4,
+                body="Use env vars for secrets.",
+                confidence="high",
+                confidence_reason="Secret is plaintext in source code",
+            ),
         ],
         persona_name="alice",
         pr_url="https://github.com/owner/repo/pull/42",
