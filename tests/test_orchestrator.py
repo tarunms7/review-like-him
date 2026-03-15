@@ -11,7 +11,6 @@ from review_bot.github.api import PullRequestFile
 from review_bot.review.formatter import (
     CategorySection,
     Finding,
-    InlineComment,
     ReviewResult,
 )
 from review_bot.review.orchestrator import (
