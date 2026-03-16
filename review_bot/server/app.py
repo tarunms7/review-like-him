@@ -261,7 +261,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Graceful drain before stopping worker
         drained = await job_queue.drain(timeout=app_settings.shutdown_drain_timeout)
         if not drained:
-            logger.warning("Drain timed out after %ds, forcing shutdown", app_settings.shutdown_drain_timeout)
+            timeout = app_settings.shutdown_drain_timeout
+            logger.warning("Drain timed out after %ds, forcing shutdown", timeout)
         await job_queue.stop_worker()
         await engine.dispose()
 
