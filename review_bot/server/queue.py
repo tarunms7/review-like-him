@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from review_bot.github.api import GitHubAPIClient
+from review_bot.github.api import GITHUB_API_BASE, GitHubAPIClient
 from review_bot.github.app import GitHubAppAuth
 from review_bot.notifications.base import NotificationDispatcher, NotificationMessage
 from review_bot.persona.store import PersonaStore
@@ -22,6 +22,118 @@ from review_bot.review.orchestrator import ReviewOrchestrator
 logger = logging.getLogger("review-bot")
 
 MULTI_REVIEW_DELAY_SECONDS: float = 2.0
+
+# Stage-to-emoji mapping matching orchestrator.PROGRESS_STAGES
+_STAGE_EMOJI: dict[str, str] = {
+    "fetching_pr": "📥",
+    "scanning_repo": "🔍",
+    "loading_persona": "👤",
+    "building_prompt": "📝",
+    "reviewing": "🤖",
+    "formatting": "📋",
+    "filtering": "🔧",
+    "posting": "📤",
+    "complete": "✅",
+}
+
+
+def _build_progress_bar(percent: int) -> str:
+    """Build a text progress bar like [████████░░░░░░░░░░░░] 40%."""
+    filled = percent // 5  # 20-char bar
+    empty = 20 - filled
+    return f"[{'█' * filled}{'░' * empty}] {percent}%"
+
+
+class GitHubProgressCallback:
+    """Posts and updates a live progress comment on a GitHub PR.
+
+    Implements the ProgressCallback protocol from review_bot.review.orchestrator.
+
+    Uses ``GitHubAPIClient.post_comment`` for initial creation, then falls
+    back to the underlying httpx client for PATCH (update) and DELETE since
+    ``update_comment`` / ``delete_comment`` are not yet on the API client.
+    """
+
+    def __init__(
+        self,
+        github_client: GitHubAPIClient,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        persona_name: str,
+    ) -> None:
+        self._client = github_client
+        self._owner = owner
+        self._repo = repo
+        self._pr_number = pr_number
+        self._persona_name = persona_name
+        self._comment_id: int | None = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers for PATCH / DELETE (not yet on GitHubAPIClient)
+    # ------------------------------------------------------------------
+
+    async def _update_comment(self, comment_id: int, body: str) -> dict:
+        """PATCH an existing issue comment via the underlying httpx client."""
+        resp = await self._client._request(
+            "PATCH",
+            f"{GITHUB_API_BASE}/repos/{self._owner}/{self._repo}"
+            f"/issues/comments/{comment_id}",
+            json={"body": body},
+        )
+        return resp.json()
+
+    async def _delete_comment(self, comment_id: int) -> None:
+        """DELETE an issue comment via the underlying httpx client."""
+        await self._client._request(
+            "DELETE",
+            f"{GITHUB_API_BASE}/repos/{self._owner}/{self._repo}"
+            f"/issues/comments/{comment_id}",
+        )
+
+    # ------------------------------------------------------------------
+    # ProgressCallback protocol
+    # ------------------------------------------------------------------
+
+    async def on_progress(
+        self, stage: str, message: str, percent: int | None = None,
+    ) -> None:
+        """Post or update the progress comment on the PR."""
+        emoji = _STAGE_EMOJI.get(stage, "⏳")
+        lines = [f"⏳ **{self._persona_name}-bot** is reviewing...", ""]
+        lines.append(f"{emoji} **{stage.replace('_', ' ').title()}** — {message}")
+        if percent is not None:
+            lines.append(f"\n{_build_progress_bar(percent)}")
+
+        body = "\n".join(lines)
+
+        try:
+            if self._comment_id is None:
+                # POST new comment
+                resp = await self._client.post_comment(
+                    self._owner, self._repo, self._pr_number, body,
+                )
+                self._comment_id = resp.get("id")
+            else:
+                # PATCH existing comment
+                await self._update_comment(self._comment_id, body)
+        except Exception:
+            logger.warning(
+                "Failed to update progress comment for %s/%s#%d",
+                self._owner, self._repo, self._pr_number,
+            )
+
+    async def delete(self) -> None:
+        """Delete the progress comment after final review is posted."""
+        if self._comment_id is None:
+            return
+        try:
+            await self._delete_comment(self._comment_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete progress comment %d for %s/%s#%d",
+                self._comment_id, self._owner, self._repo, self._pr_number,
+            )
 
 
 class ReviewJob:
@@ -59,6 +171,7 @@ class AsyncJobQueue:
         db_engine: AsyncEngine,
         github_auth: GitHubAppAuth,
         persona_store: PersonaStore,
+        drain_timeout: float = 30.0,
     ) -> None:
         self._queue: asyncio.Queue[ReviewJob] = asyncio.Queue()
         self._db_engine = db_engine
@@ -67,6 +180,8 @@ class AsyncJobQueue:
         self._worker_task: asyncio.Task | None = None
         self._current_job_id: str | None = None
         self._notification_dispatcher: NotificationDispatcher | None = None
+        self._is_draining: bool = False
+        self._drain_timeout: float = drain_timeout
 
     @property
     def queue_depth(self) -> int:
@@ -99,6 +214,38 @@ class AsyncJobQueue:
             Job ID string or None if idle.
         """
         return self._current_job_id
+
+    @property
+    def is_draining(self) -> bool:
+        """Return True if the queue is draining (rejecting new jobs)."""
+        return self._is_draining
+
+    async def drain(self, timeout: float | None = None) -> bool:
+        """Drain in-flight work, rejecting new jobs.
+
+        Sets is_draining=True, then waits up to ``timeout`` seconds for
+        _current_job_id to become None (meaning no job is being processed).
+        Returns True if drained within timeout, False if timed out.
+        """
+        self._is_draining = True
+        effective_timeout = timeout if timeout is not None else self._drain_timeout
+
+        if effective_timeout <= 0:
+            return self._current_job_id is None
+
+        try:
+            elapsed = 0.0
+            poll_interval = 0.1
+            while self._current_job_id is not None and elapsed < effective_timeout:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+            return self._current_job_id is None
+        except asyncio.CancelledError:
+            return self._current_job_id is None
+
+    def set_notification_dispatcher(self, dispatcher: NotificationDispatcher) -> None:
+        """Wire the notification dispatcher after construction."""
+        self._notification_dispatcher = dispatcher
 
     async def enqueue(self, job: ReviewJob) -> str | None:
         """Add a review job to the queue and persist status.
@@ -157,15 +304,22 @@ class AsyncJobQueue:
         logger.info("Job queue worker started")
 
     async def stop_worker(self) -> None:
-        """Stop the background worker loop gracefully."""
+        """Stop the background worker loop gracefully, draining first."""
         if self._worker_task is not None:
+            drained = await self.drain()
+            if not drained:
+                logger.warning(
+                    "Drain timed out after %.1fs, cancelling worker",
+                    self._drain_timeout,
+                )
             self._worker_task.cancel()
             try:
                 await self._worker_task
             except asyncio.CancelledError:
                 pass
             self._worker_task = None
-            logger.info("Job queue worker stopped")
+            self._is_draining = False  # Reset after full stop
+            logger.info("Job queue worker stopped (drained=%s)", drained)
 
     async def _worker_loop(self) -> None:
         """Main worker loop: dequeue jobs and run reviews."""
@@ -188,9 +342,6 @@ class AsyncJobQueue:
             job.started_at = datetime.now(tz=UTC).isoformat()
             await self._update_job_status(job)
 
-            # Post progress comment on the PR
-            await self._post_progress_comment(job)
-
             logger.info(
                 "Processing job %s: %s/%s#%d as '%s'",
                 job.id,
@@ -206,17 +357,28 @@ class AsyncJobQueue:
                 )
                 try:
                     github_client = GitHubAPIClient(http_client)
-                    orchestrator = ReviewOrchestrator(
+                    callback = GitHubProgressCallback(
                         github_client=github_client,
-                        persona_store=self._persona_store,
-                        db_engine=self._db_engine,
-                    )
-                    review_result = await orchestrator.run_review(
                         owner=job.owner,
                         repo=job.repo,
                         pr_number=job.pr_number,
                         persona_name=job.persona_name,
                     )
+                    try:
+                        orchestrator = ReviewOrchestrator(
+                            github_client=github_client,
+                            persona_store=self._persona_store,
+                            db_engine=self._db_engine,
+                            progress_callback=callback,
+                        )
+                        review_result = await orchestrator.run_review(
+                            owner=job.owner,
+                            repo=job.repo,
+                            pr_number=job.pr_number,
+                            persona_name=job.persona_name,
+                        )
+                    finally:
+                        await callback.delete()
                 finally:
                     await http_client.aclose()
 
@@ -266,28 +428,6 @@ class AsyncJobQueue:
             await self._delay_if_same_pr(job)
         finally:
             self._current_job_id = None
-
-    async def _post_progress_comment(self, job: ReviewJob) -> None:
-        """Post an in-progress comment on the PR when a review starts."""
-        try:
-            http_client = await self._github_auth.create_token_client(
-                job.installation_id,
-            )
-            try:
-                github_client = GitHubAPIClient(http_client)
-                await github_client.post_comment(
-                    job.owner,
-                    job.repo,
-                    job.pr_number,
-                    f"🔍 **Review in progress** by **{job.persona_name}**... "
-                    f"Scanning repository and analyzing changes.",
-                )
-            finally:
-                await http_client.aclose()
-        except httpx.HTTPError:
-            logger.warning("Failed to post progress comment for job %s", job.id)
-        except (KeyError, ValueError):
-            logger.warning("Failed to build progress comment for job %s", job.id)
 
     @staticmethod
     def _classify_error(exc: httpx.HTTPError) -> str:

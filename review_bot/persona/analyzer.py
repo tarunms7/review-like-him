@@ -132,7 +132,6 @@ class PersonaAnalyzer:
     async def analyze_incremental(
         self,
         existing_profile: PersonaProfile,
-        new_weighted_reviews: list[dict],
         all_weighted_reviews: list[dict],
     ) -> PersonaProfile:
         """Re-analyze all reviews and produce an updated PersonaProfile.
@@ -142,8 +141,6 @@ class PersonaAnalyzer:
 
         Args:
             existing_profile: The current persona profile with overrides to keep.
-            new_weighted_reviews: Only the newly mined weighted reviews (unused
-                directly but available for future delta-only analysis).
             all_weighted_reviews: Full merged set of weighted reviews to analyze.
 
         Returns:

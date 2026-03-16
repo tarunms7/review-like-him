@@ -142,11 +142,13 @@ class TestNotificationChannelProtocol:
 
 
 class TestNotificationDispatcher:
+    @pytest.mark.asyncio()
     async def test_empty_dispatcher_is_noop(self, sample_message: NotificationMessage) -> None:
         dispatcher = NotificationDispatcher()
         results = await dispatcher.notify(sample_message)
         assert results == {}
 
+    @pytest.mark.asyncio()
     async def test_dispatch_to_multiple_channels(
         self, sample_message: NotificationMessage
     ) -> None:
@@ -165,6 +167,7 @@ class TestNotificationDispatcher:
         ch1.send.assert_awaited_once_with(sample_message)
         ch2.send.assert_awaited_once_with(sample_message)
 
+    @pytest.mark.asyncio()
     async def test_continues_when_one_channel_fails(
         self, sample_message: NotificationMessage
     ) -> None:
@@ -181,6 +184,7 @@ class TestNotificationDispatcher:
 
         assert results == {"slack": False, "discord": True}
 
+    @pytest.mark.asyncio()
     async def test_channel_returns_false(self, sample_message: NotificationMessage) -> None:
         ch = MagicMock()
         ch.channel_type = "slack"
@@ -191,6 +195,7 @@ class TestNotificationDispatcher:
 
         assert results == {"slack": False}
 
+    @pytest.mark.asyncio()
     async def test_add_channel(self, sample_message: NotificationMessage) -> None:
         dispatcher = NotificationDispatcher()
 
@@ -254,6 +259,7 @@ class TestBuildMessageFromResult:
 
 
 class TestSlackNotifier:
+    @pytest.mark.asyncio()
     async def test_send_success(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -272,6 +278,7 @@ class TestSlackNotifier:
         assert call_kwargs.kwargs["headers"]["Authorization"] == "Bearer xoxb-test"
         assert call_kwargs.kwargs["json"]["channel"] == "#reviews"
 
+    @pytest.mark.asyncio()
     async def test_send_channel_not_found(
         self, sample_message: NotificationMessage
     ) -> None:
@@ -287,6 +294,7 @@ class TestSlackNotifier:
 
         assert result is False
 
+    @pytest.mark.asyncio()
     async def test_send_invalid_auth(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -300,6 +308,7 @@ class TestSlackNotifier:
 
         assert result is False
 
+    @pytest.mark.asyncio()
     async def test_send_exception(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.side_effect = httpx.ConnectError("connection refused")
@@ -342,12 +351,14 @@ class TestSlackNotifier:
         assert "Error" in body
         assert "LLM timeout" in body
 
+    @pytest.mark.asyncio()
     async def test_close_owned_client(self) -> None:
         notifier = SlackNotifier(bot_token="xoxb-test", channel="#reviews")
         with patch.object(notifier._http_client, "aclose", new_callable=AsyncMock) as mock_close:
             await notifier.close()
             mock_close.assert_awaited_once()
 
+    @pytest.mark.asyncio()
     async def test_close_external_client(self) -> None:
         external_client = AsyncMock(spec=httpx.AsyncClient)
         notifier = SlackNotifier(
@@ -364,6 +375,7 @@ class TestSlackNotifier:
 
 
 class TestDiscordNotifier:
+    @pytest.mark.asyncio()
     async def test_send_success_200(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -381,6 +393,7 @@ class TestDiscordNotifier:
         assert call_kwargs.args[0] == "https://discord.com/api/webhooks/123/abc"
         assert "embeds" in call_kwargs.kwargs["json"]
 
+    @pytest.mark.asyncio()
     async def test_send_success_204(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -395,6 +408,7 @@ class TestDiscordNotifier:
 
         assert result is True
 
+    @pytest.mark.asyncio()
     async def test_send_404(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -409,6 +423,7 @@ class TestDiscordNotifier:
 
         assert result is False
 
+    @pytest.mark.asyncio()
     async def test_send_429_rate_limit(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -423,6 +438,7 @@ class TestDiscordNotifier:
 
         assert result is False
 
+    @pytest.mark.asyncio()
     async def test_send_exception(self, sample_message: NotificationMessage) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.side_effect = httpx.ConnectError("connection refused")
@@ -485,6 +501,7 @@ class TestDiscordNotifier:
         assert "Error" in embed["description"]
         assert "LLM timeout" in embed["description"]
 
+    @pytest.mark.asyncio()
     async def test_close_owned_client(self) -> None:
         notifier = DiscordNotifier(
             webhook_url="https://discord.com/api/webhooks/123/abc"
@@ -493,6 +510,7 @@ class TestDiscordNotifier:
             await notifier.close()
             mock_close.assert_awaited_once()
 
+    @pytest.mark.asyncio()
     async def test_close_external_client(self) -> None:
         external_client = AsyncMock(spec=httpx.AsyncClient)
         notifier = DiscordNotifier(

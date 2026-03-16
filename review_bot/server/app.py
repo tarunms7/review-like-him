@@ -15,6 +15,8 @@ from review_bot.config.paths import ensure_directories
 from review_bot.config.settings import Settings
 from review_bot.dashboard.router import router as dashboard_router
 from review_bot.github.app import GitHubAppAuth
+from review_bot.github.rate_limits import RateLimitTracker
+from review_bot.notifications.base import NotificationDispatcher, create_notifiers
 from review_bot.persona.store import PersonaStore
 from review_bot.server.health import router as health_router
 from review_bot.server.health import set_start_time
@@ -175,14 +177,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await job_queue.start_worker()
 
-        # Initialize rate limit tracker placeholder (task-2 wires into API client)
-        rate_limit_tracker = None
-        try:
-            from review_bot.github.rate_limits import RateLimitTracker
+        # Initialize notification dispatcher
+        notifiers = create_notifiers(app_settings)
+        if notifiers:
+            dispatcher = NotificationDispatcher(channels=notifiers)
+            job_queue.set_notification_dispatcher(dispatcher)
+            logger.info("Notification dispatcher initialized with %d channels", len(notifiers))
 
-            rate_limit_tracker = RateLimitTracker()
-        except ImportError:
-            logger.debug("RateLimitTracker not yet available, using None placeholder")
+        # Initialize rate limit tracker
+        rate_limit_tracker = RateLimitTracker()
 
         # Initialize feedback store
         from review_bot.review.feedback import FeedbackStore
@@ -247,6 +250,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await poll_task
             except asyncio.CancelledError:
                 pass
+            await poll_http_client.aclose()
+
+        # Close notification channels
+        if hasattr(job_queue, '_notification_dispatcher') and job_queue._notification_dispatcher:
+            for channel in job_queue._notification_dispatcher._channels:
+                if hasattr(channel, 'close'):
+                    await channel.close()
+
+        # Graceful drain before stopping worker
+        drained = await job_queue.drain(timeout=app_settings.shutdown_drain_timeout)
+        if not drained:
+            timeout = app_settings.shutdown_drain_timeout
+            logger.warning("Drain timed out after %ds, forcing shutdown", timeout)
         await job_queue.stop_worker()
         await engine.dispose()
 
