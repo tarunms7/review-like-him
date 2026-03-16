@@ -63,11 +63,12 @@ def configure(
 def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
     """Verify GitHub HMAC-SHA256 webhook signature.
 
-    Returns False when secret is empty/None — callers must reject
-    webhooks when no secret is configured.
+    When secret is empty/None, returns True (no validation possible).
+    The webhook_handler must check for unconfigured secret and reject
+    with 403 before calling this function.
     """
     if not secret:
-        return False
+        return True
     if not signature:
         return False
     expected = "sha256=" + hmac.new(

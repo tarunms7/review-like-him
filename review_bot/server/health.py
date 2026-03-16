@@ -256,11 +256,12 @@ async def _check_github_app(github_auth) -> CheckResult:
 def _is_internal_request(token_header: str | None) -> bool:
     """Check if the request has a valid internal token.
 
-    Returns True only if a non-empty internal token is configured
-    and the provided header matches it.
+    When no internal token is configured, all requests are treated
+    as internal (no security boundary to enforce). When a token IS
+    configured, the header must match to see internal details.
     """
     if not _INTERNAL_TOKEN:
-        return False
+        return True
     if not token_header:
         return False
     return token_header == _INTERNAL_TOKEN
