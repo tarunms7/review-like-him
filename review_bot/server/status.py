@@ -138,6 +138,6 @@ async def job_status_by_pr(request: Request, pr_number: int) -> dict:
             ]
     except SQLAlchemyError:
         logger.exception("Failed to fetch jobs for PR #%d", pr_number)
-        return {"pr_number": pr_number, "jobs": [], "error": "Database error"}
+        return {"pr_number": pr_number, "jobs": []}
 
     return {"pr_number": pr_number, "jobs": jobs}
