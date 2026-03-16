@@ -66,7 +66,7 @@ async def _check_database(engine) -> CheckResult:
         CheckResult with pass/fail status and latency info.
     """
     from sqlalchemy import text
-    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.exc import DatabaseError, OperationalError
 
     t0 = time.monotonic()
     try:
@@ -92,11 +92,12 @@ async def _check_database(engine) -> CheckResult:
             detail=f"Database error: {exc}",
             duration_ms=elapsed_ms,
         )
-    except Exception as exc:
+    except (DatabaseError, OSError) as exc:
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        logger.warning("Database health check failed: %s: %s", type(exc).__name__, exc)
         return CheckResult(
             status="fail",
-            detail=f"Unexpected error: {exc}",
+            detail=f"Database error ({type(exc).__name__}): {exc}",
             duration_ms=elapsed_ms,
         )
 
@@ -130,11 +131,12 @@ async def _check_queue(job_queue) -> CheckResult:
         if depth > 10:
             return CheckResult(status="warn", detail=detail, duration_ms=elapsed_ms)
         return CheckResult(status="pass", detail=detail, duration_ms=elapsed_ms)
-    except Exception as exc:
+    except (AttributeError, RuntimeError) as exc:
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        logger.warning("Queue health check failed: %s: %s", type(exc).__name__, exc)
         return CheckResult(
             status="fail",
-            detail=f"Queue check error: {exc}",
+            detail=f"Queue check error ({type(exc).__name__}): {exc}",
             duration_ms=elapsed_ms,
         )
 
@@ -179,11 +181,12 @@ async def _check_github_rate_limit(rate_limit_tracker) -> CheckResult:
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
         status = "warn" if has_warning else "pass"
         return CheckResult(status=status, detail=detail, duration_ms=elapsed_ms)
-    except Exception as exc:
+    except (AttributeError, KeyError, ValueError, TypeError) as exc:
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        logger.warning("Rate limit health check failed: %s: %s", type(exc).__name__, exc)
         return CheckResult(
             status="pass",
-            detail=f"Rate limit check unavailable: {exc}",
+            detail=f"Rate limit check unavailable ({type(exc).__name__}): {exc}",
             duration_ms=elapsed_ms,
         )
 
@@ -207,11 +210,12 @@ async def _check_github_app(github_auth) -> CheckResult:
             detail=f"App ID: {app_id}, installations: {token_count}",
             duration_ms=elapsed_ms,
         )
-    except Exception as exc:
+    except (AttributeError, TypeError) as exc:
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        logger.warning("GitHub App health check failed: %s: %s", type(exc).__name__, exc)
         return CheckResult(
             status="fail",
-            detail=f"GitHub App check error: {exc}",
+            detail=f"GitHub App check error ({type(exc).__name__}): {exc}",
             duration_ms=elapsed_ms,
         )
 

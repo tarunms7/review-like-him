@@ -169,6 +169,7 @@ _CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_feedback_created ON review_feedback(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_comment ON review_feedback(comment_id)",
     "CREATE INDEX IF NOT EXISTS idx_tracking_repo ON review_comment_tracking(repo)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_dedup ON jobs(owner, repo, pr_number, persona_name, status)",
 ]
 
 
