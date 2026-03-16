@@ -6,7 +6,8 @@ import logging
 import re
 
 import httpx
-from pydantic import BaseModel, Field
+import yaml
+from pydantic import BaseModel, Field, ValidationError
 
 from review_bot.config.repo_config import RepoConfig
 from review_bot.github.api import GitHubAPIClient
@@ -284,27 +285,27 @@ class RepoScanner:
         # New detection methods — all wrapped in try/except for resilience
         try:
             modules = await self._detect_modules(owner, repo, root_contents)
-        except Exception:
-            logger.warning("Failed to detect modules for %s/%s", owner, repo)
+        except (httpx.HTTPStatusError, KeyError, TypeError) as exc:
+            logger.warning("Failed to detect modules for %s/%s: %s", owner, repo, exc)
             modules = []
 
         try:
             api_contracts = await self._detect_api_contracts(owner, repo, modules)
-        except Exception:
-            logger.warning("Failed to detect API contracts for %s/%s", owner, repo)
+        except (httpx.HTTPStatusError, KeyError, TypeError) as exc:
+            logger.warning("Failed to detect API contracts for %s/%s: %s", owner, repo, exc)
             api_contracts = []
 
         try:
             ownership = await self._detect_ownership(owner, repo, root_contents)
-        except Exception:
-            logger.warning("Failed to detect ownership for %s/%s", owner, repo)
+        except (httpx.HTTPStatusError, KeyError) as exc:
+            logger.warning("Failed to detect ownership for %s/%s: %s", owner, repo, exc)
             ownership = []
 
         try:
             architecture_notes = await self._parse_readme_architecture(owner, repo)
-        except Exception:
+        except (httpx.HTTPStatusError, re.error, KeyError) as exc:
             logger.warning(
-                "Failed to parse README architecture for %s/%s", owner, repo,
+                "Failed to parse README architecture for %s/%s: %s", owner, repo, exc,
             )
             architecture_notes = []
 
@@ -312,9 +313,9 @@ class RepoScanner:
             import_graph_summary = await self._analyze_import_graph(
                 owner, repo, modules,
             )
-        except Exception:
+        except (httpx.HTTPStatusError, KeyError, IndexError, ValueError) as exc:
             logger.warning(
-                "Failed to analyze import graph for %s/%s", owner, repo,
+                "Failed to analyze import graph for %s/%s: %s", owner, repo, exc,
             )
             import_graph_summary = ""
 
@@ -322,8 +323,8 @@ class RepoScanner:
 
         try:
             repo_config = await self._read_repo_config(owner, repo) or {}
-        except Exception:
-            logger.warning("Failed to read repo config for %s/%s", owner, repo)
+        except (httpx.HTTPStatusError, yaml.YAMLError, KeyError, ValueError) as exc:
+            logger.warning("Failed to read repo config for %s/%s: %s", owner, repo, exc)
             repo_config = {}
 
         return RepoContext(
@@ -380,7 +381,7 @@ class RepoScanner:
         except httpx.HTTPStatusError:
             logger.debug("HTTP error reading file %s in %s/%s", path, owner, repo)
             return None
-        except Exception:
+        except (UnicodeDecodeError, KeyError, TypeError, ValueError):
             logger.warning(
                 "Unexpected error reading file %s in %s/%s",
                 path, owner, repo, exc_info=True,
@@ -1010,7 +1011,7 @@ class RepoScanner:
 
         try:
             return RepoConfig.from_yaml(content)
-        except Exception:
+        except (yaml.YAMLError, ValidationError, ValueError):
             logger.warning(
                 "Failed to parse .review-like-him.yml in %s/%s, using defaults",
                 owner, repo, exc_info=True,
@@ -1036,15 +1037,13 @@ class RepoScanner:
             return None
 
         try:
-            import yaml
-
             config = yaml.safe_load(content)
             if isinstance(config, dict):
                 return config
             return None
-        except Exception:
+        except (yaml.YAMLError, ValueError) as exc:
             logger.warning(
-                "Failed to parse .review-like-him.yml in %s/%s",
-                owner, repo,
+                "Failed to parse .review-like-him.yml in %s/%s: %s",
+                owner, repo, exc,
             )
             return None

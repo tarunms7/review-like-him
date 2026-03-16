@@ -2,30 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import re
 
 import click
 
+from review_bot.cli.utils import _run_async, create_github_client, get_github_token
 from review_bot.persona.store import PersonaStore
-
-
-def _run_async(coro):
-    """Run an async coroutine from sync Click context."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
-
 
 _PR_URL_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)")
 
@@ -68,7 +51,7 @@ def compare_cmd(pr_url: str, personas: str, timeout: float, json_output: bool) -
         raise SystemExit(1)
 
     # Validate GitHub token
-    gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    gh_token = get_github_token()
     if not gh_token:
         click.echo(
             click.style(
@@ -86,16 +69,10 @@ def compare_cmd(pr_url: str, personas: str, timeout: float, json_output: bool) -
     )
 
     async def _compare():
-        import httpx
-
         from review_bot.github.api import GitHubAPIClient
         from review_bot.review.comparator import PersonaComparator
 
-        headers = {"Accept": "application/vnd.github+json"}
-        if gh_token:
-            headers["Authorization"] = f"Bearer {gh_token}"
-
-        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+        async with create_github_client(gh_token) as client:
             github_client = GitHubAPIClient(client)
             store = PersonaStore()
             comparator = PersonaComparator(github_client, store)

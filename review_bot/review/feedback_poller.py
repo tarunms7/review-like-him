@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
+import httpx
+
 from review_bot.github.api import GitHubAPIClient
 from review_bot.review.feedback import FeedbackEvent, FeedbackStore
 
@@ -110,10 +112,10 @@ class FeedbackPoller:
                 headers={"Accept": "application/vnd.github+json"},
             )
             return resp.json()
-        except Exception:
+        except (httpx.HTTPStatusError, httpx.RequestError, KeyError, TypeError) as exc:
             logger.warning(
-                "Failed to fetch reactions for comment %d in %s/%s",
-                comment_id, owner, repo,
+                "Failed to fetch reactions for comment %d in %s/%s: %s",
+                comment_id, owner, repo, exc,
             )
             return []
 
@@ -202,7 +204,7 @@ class FeedbackPoller:
             except asyncio.CancelledError:
                 logger.info("Feedback poll loop cancelled")
                 raise
-            except Exception:
-                logger.exception("Error in feedback poll cycle")
+            except Exception as exc:
+                logger.exception("Error in feedback poll cycle: %s", exc)
 
             await asyncio.sleep(self._poll_interval.total_seconds())

@@ -7,12 +7,16 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
+import httpx
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from review_bot.github.api import GitHubAPIClient
 from review_bot.github.app import GitHubAppAuth
+from review_bot.notifications.base import NotificationDispatcher, NotificationMessage
 from review_bot.persona.store import PersonaStore
+from review_bot.review.formatter import ReviewResult
 from review_bot.review.orchestrator import ReviewOrchestrator
 
 logger = logging.getLogger("review-bot")
@@ -62,6 +66,7 @@ class AsyncJobQueue:
         self._persona_store = persona_store
         self._worker_task: asyncio.Task | None = None
         self._current_job_id: str | None = None
+        self._notification_dispatcher: NotificationDispatcher | None = None
 
     @property
     def queue_depth(self) -> int:
@@ -142,7 +147,7 @@ class AsyncJobQueue:
                 )
                 count = result.scalar() or 0
                 return count > 0
-        except Exception:
+        except SQLAlchemyError:
             logger.exception("Failed to check duplicate for job %s", job.id)
             return False
 
@@ -183,6 +188,9 @@ class AsyncJobQueue:
             job.started_at = datetime.now(tz=UTC).isoformat()
             await self._update_job_status(job)
 
+            # Post progress comment on the PR
+            await self._post_progress_comment(job)
+
             logger.info(
                 "Processing job %s: %s/%s#%d as '%s'",
                 job.id,
@@ -203,7 +211,7 @@ class AsyncJobQueue:
                         persona_store=self._persona_store,
                         db_engine=self._db_engine,
                     )
-                    await orchestrator.run_review(
+                    review_result = await orchestrator.run_review(
                         owner=job.owner,
                         repo=job.repo,
                         pr_number=job.pr_number,
@@ -216,30 +224,41 @@ class AsyncJobQueue:
                 job.completed_at = datetime.now(tz=UTC).isoformat()
                 logger.info("Job %s completed successfully", job.id)
 
+                # Dispatch notifications on success
+                await self._dispatch_notification(job, review_result=review_result)
+
+            except httpx.HTTPError as exc:
+                job.status = "failed"
+                job.completed_at = datetime.now(tz=UTC).isoformat()
+                job.error_message = str(exc)
+                logger.error("Job %s failed (HTTP): %s", job.id, exc)
+                error_detail = self._classify_error(exc)
+                await self._post_error_comment(job, error_detail)
+                await self._dispatch_notification(job, error=exc)
+
+            except (KeyError, ValueError) as exc:
+                job.status = "failed"
+                job.completed_at = datetime.now(tz=UTC).isoformat()
+                job.error_message = str(exc)
+                logger.error("Job %s failed (parsing): %s", job.id, exc)
+                error_detail = (
+                    f"Configuration or parsing error — check persona name "
+                    f"and PR data. ({exc})"
+                )
+                await self._post_error_comment(job, error_detail)
+                await self._dispatch_notification(job, error=exc)
+
             except Exception as exc:
                 job.status = "failed"
                 job.completed_at = datetime.now(tz=UTC).isoformat()
                 job.error_message = str(exc)
                 logger.error("Job %s failed: %s", job.id, exc)
-
-                # Try to post error comment on the PR
-                try:
-                    http_client = await self._github_auth.create_token_client(
-                        job.installation_id,
-                    )
-                    try:
-                        github_client = GitHubAPIClient(http_client)
-                        await github_client.post_comment(
-                            job.owner,
-                            job.repo,
-                            job.pr_number,
-                            f"⚠️ Review by **{job.persona_name}** could not be completed. "
-                            f"The team has been notified. Please try again later.",
-                        )
-                    finally:
-                        await http_client.aclose()
-                except Exception:
-                    logger.exception("Failed to post error comment for job %s", job.id)
+                error_detail = (
+                    f"Unexpected error — the team has been notified. "
+                    f"({type(exc).__name__})"
+                )
+                await self._post_error_comment(job, error_detail)
+                await self._dispatch_notification(job, error=exc)
 
             await self._update_job_status(job)
 
@@ -247,6 +266,119 @@ class AsyncJobQueue:
             await self._delay_if_same_pr(job)
         finally:
             self._current_job_id = None
+
+    async def _post_progress_comment(self, job: ReviewJob) -> None:
+        """Post an in-progress comment on the PR when a review starts."""
+        try:
+            http_client = await self._github_auth.create_token_client(
+                job.installation_id,
+            )
+            try:
+                github_client = GitHubAPIClient(http_client)
+                await github_client.post_comment(
+                    job.owner,
+                    job.repo,
+                    job.pr_number,
+                    f"🔍 **Review in progress** by **{job.persona_name}**... "
+                    f"Scanning repository and analyzing changes.",
+                )
+            finally:
+                await http_client.aclose()
+        except httpx.HTTPError:
+            logger.warning("Failed to post progress comment for job %s", job.id)
+        except (KeyError, ValueError):
+            logger.warning("Failed to build progress comment for job %s", job.id)
+
+    @staticmethod
+    def _classify_error(exc: httpx.HTTPError) -> str:
+        """Return a user-friendly error description based on HTTP error type."""
+        exc_str = str(exc)
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status == 403:
+                return (
+                    "Rate limited — will retry automatically on next webhook event."
+                )
+            if status == 404:
+                return (
+                    "Repository or PR not found — check permissions "
+                    "and that the PR is still open."
+                )
+            if status == 401:
+                return (
+                    "Authentication failed — GitHub App installation token "
+                    "may have expired."
+                )
+            return f"GitHub API returned HTTP {status}."
+        if "timeout" in exc_str.lower():
+            return (
+                "Request timed out — GitHub API may be experiencing issues. "
+                "Will retry on next event."
+            )
+        return (
+            f"Network error communicating with GitHub API. ({type(exc).__name__})"
+        )
+
+    async def _post_error_comment(self, job: ReviewJob, error_detail: str) -> None:
+        """Post an error comment on the PR with actionable information."""
+        try:
+            http_client = await self._github_auth.create_token_client(
+                job.installation_id,
+            )
+            try:
+                github_client = GitHubAPIClient(http_client)
+                await github_client.post_comment(
+                    job.owner,
+                    job.repo,
+                    job.pr_number,
+                    f"⚠️ Review by **{job.persona_name}** could not be completed.\n\n"
+                    f"{error_detail}",
+                )
+            finally:
+                await http_client.aclose()
+        except httpx.HTTPError:
+            logger.exception("Failed to post error comment for job %s", job.id)
+
+    async def _dispatch_notification(
+        self,
+        job: ReviewJob,
+        *,
+        review_result: ReviewResult | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        """Dispatch a notification via the configured NotificationDispatcher."""
+        dispatcher = self._notification_dispatcher
+        if dispatcher is None:
+            return
+
+        try:
+            if review_result is not None:
+                message = NotificationDispatcher.build_message_from_result(
+                    review_result,
+                    job.owner,
+                    job.repo,
+                    job.pr_number,
+                )
+            else:
+                pr_url = (
+                    f"https://github.com/{job.owner}/{job.repo}"
+                    f"/pull/{job.pr_number}"
+                )
+                message = NotificationMessage(
+                    title=f"Review Failed: {job.owner}/{job.repo}#{job.pr_number}",
+                    pr_url=pr_url,
+                    persona_name=job.persona_name,
+                    repo=f"{job.owner}/{job.repo}",
+                    pr_number=job.pr_number,
+                    verdict="comment",
+                    summary=str(error) if error else "Unknown error",
+                    comment_count=0,
+                    success=False,
+                    error_message=str(error) if error else "Unknown error",
+                )
+            await dispatcher.notify(message)
+        except Exception:
+            logger.exception("Failed to dispatch notification for job %s", job.id)
 
     async def _delay_if_same_pr(self, job: ReviewJob) -> None:
         """Sleep briefly if the next queued job targets the same PR."""
@@ -267,7 +399,7 @@ class AsyncJobQueue:
                     MULTI_REVIEW_DELAY_SECONDS,
                 )
                 await asyncio.sleep(MULTI_REVIEW_DELAY_SECONDS)
-        except Exception:
+        except (IndexError, AttributeError):
             pass  # Non-critical, skip delay on any error
 
     async def _persist_job(self, job: ReviewJob) -> None:
@@ -294,7 +426,7 @@ class AsyncJobQueue:
                         "queued_at": job.queued_at,
                     },
                 )
-        except Exception:
+        except SQLAlchemyError:
             logger.exception("Failed to persist job %s", job.id)
 
     async def _update_job_status(self, job: ReviewJob) -> None:
@@ -318,5 +450,5 @@ class AsyncJobQueue:
                         "error_message": job.error_message,
                     },
                 )
-        except Exception:
+        except SQLAlchemyError:
             logger.exception("Failed to update job %s status", job.id)

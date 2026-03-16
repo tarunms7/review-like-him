@@ -121,6 +121,63 @@ class ReviewPoster:
                 )
                 raise exc from fallback_exc
 
+    async def post_progress_comment(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        persona_name: str,
+        message: str,
+    ) -> int:
+        """Post a progress comment on a PR. Returns the comment ID for updates.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            pr_number: Pull request number.
+            persona_name: Name of the reviewing persona.
+            message: Progress message to display.
+
+        Returns:
+            The GitHub comment ID (int) for subsequent updates.
+        """
+        body = f"⏳ **{persona_name}-bot** is reviewing this PR...\n\n{message}"
+        response = await self._client.post_comment(owner, repo, pr_number, body)
+        return response["id"]
+
+    async def update_progress_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        message: str,
+    ) -> None:
+        """Update an existing progress comment on a PR.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            comment_id: The comment ID returned by post_progress_comment.
+            message: Updated progress message.
+        """
+        await self._client._request(
+            "PATCH",
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            json={"body": message},
+        )
+
+    async def delete_progress_comment(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+    ) -> None:
+        """Delete a progress comment (e.g., after final review is posted)."""
+        await self._client._request(
+            "DELETE",
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+        )
+
     async def _track_posted_comments(
         self,
         owner: str,

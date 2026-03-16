@@ -2,28 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
-
 import click
-import httpx
+from rich.console import Console
 
+from review_bot.cli.utils import _run_async, create_github_client, get_github_token
 from review_bot.persona.store import PersonaStore
 
-
-def _run_async(coro):
-    """Run an async coroutine from sync Click context."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
+console = Console()
 
 
 @click.command()
@@ -64,11 +49,8 @@ def review_cmd(pr_url: str, persona_name: str) -> None:
         settings = Settings()
         ensure_directories()
 
-        headers = {"Accept": "application/vnd.github+json"}
-        gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        if gh_token:
-            headers["Authorization"] = f"Bearer {gh_token}"
-        else:
+        gh_token = get_github_token()
+        if not gh_token:
             click.echo(
                 click.style(
                     "Warning: No GITHUB_TOKEN or GH_TOKEN set. "
@@ -82,21 +64,20 @@ def review_cmd(pr_url: str, persona_name: str) -> None:
 
         try:
             # Initialize database tables
-            from review_bot.server.app import _init_database
+            with console.status("[cyan]Initializing database...", spinner="dots"):
+                from review_bot.server.app import _init_database
 
-            await _init_database(engine)
+                await _init_database(engine)
 
-            async with httpx.AsyncClient(
-                headers=headers,
-                timeout=30.0,
-            ) as client:
-                github_client = GitHubAPIClient(client)
-                orchestrator = ReviewOrchestrator(
-                    github_client,
-                    store,
-                    db_engine=engine,
-                )
-                return await orchestrator.run_review_from_url(pr_url, persona_name)
+            with console.status("[cyan]Running AI review...", spinner="dots"):
+                async with create_github_client(gh_token) as client:
+                    github_client = GitHubAPIClient(client)
+                    orchestrator = ReviewOrchestrator(
+                        github_client,
+                        store,
+                        db_engine=engine,
+                    )
+                    return await orchestrator.run_review_from_url(pr_url, persona_name)
         finally:
             await engine.dispose()
 

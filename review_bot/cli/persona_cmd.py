@@ -2,34 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import subprocess
-import sys
 from datetime import UTC, datetime
 
 import click
-import httpx
 
+from review_bot.cli.utils import _run_async, create_github_client, get_github_token
 from review_bot.persona.store import PersonaStore
 
 logger = logging.getLogger(__name__)
-
-
-def _run_async(coro):
-    """Run an async coroutine from sync Click context."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
 
 
 def _create_mining_progress_handler() -> callable:
@@ -37,7 +20,11 @@ def _create_mining_progress_handler() -> callable:
 
     Returns a callback function matching Callable[[MiningProgress], None].
     """
+    from rich.console import Console
+
     from review_bot.persona.miner import MiningProgress
+
+    console = Console()
 
     # Mutable state tracked across calls
     state = {
@@ -52,21 +39,21 @@ def _create_mining_progress_handler() -> callable:
         """Print summary line when transitioning away from a pagination phase."""
         if phase == "fetching_comments" and state["comment_pages"]:
             total_pages = len(state["comment_pages"])
-            click.echo(
-                f"\r\033[K  Fetching review comments... ({total_pages} pages) "
+            console.print(
+                f"  Fetching review comments... ({total_pages} pages) "
                 f"found {progress.items_found} comments"
             )
             state["comment_pages"] = []
         elif phase == "fetching_prs" and state["pr_pages"]:
             total_pages = len(state["pr_pages"])
-            click.echo(
-                f"\r\033[K  Fetching pull requests... ({total_pages} pages) "
+            console.print(
+                f"  Fetching pull requests... ({total_pages} pages) "
                 f"found {progress.items_found} PRs"
             )
             state["pr_pages"] = []
         elif phase == "fetching_pr_reviews" and state["last_pr_reviews_count"] > 0:
-            click.echo(
-                f"\r\033[K  \u2713 Found {progress.items_found} matching reviews"
+            console.print(
+                f"  ✓ Found {progress.items_found} matching reviews"
             )
             state["last_pr_reviews_count"] = 0
 
@@ -102,8 +89,7 @@ def _create_mining_progress_handler() -> callable:
             current_page = state["comment_pages"][-1] if state["comment_pages"] else "?"
             items = progress.items_found or 0
             msg = f"  Fetching review comments... (page {current_page}, {items} items found)"
-            sys.stderr.flush()
-            click.echo(f"\r\033[K{msg}", nl=False)
+            console.print(f"\r{msg}", end="", highlight=False)
 
         elif progress.phase == "fetching_prs":
             if progress.page is not None:
@@ -111,7 +97,7 @@ def _create_mining_progress_handler() -> callable:
             current_page = state["pr_pages"][-1] if state["pr_pages"] else "?"
             items = progress.items_found or 0
             msg = f"  Fetching pull requests... (page {current_page}, {items} items found)"
-            click.echo(f"\r\033[K{msg}", nl=False)
+            console.print(f"\r{msg}", end="", highlight=False)
 
         elif progress.phase == "fetching_pr_reviews":
             state["last_pr_reviews_count"] = (progress.pr_index or 0)
@@ -127,7 +113,7 @@ def _create_mining_progress_handler() -> callable:
                 )
             else:
                 msg = f"  Scanning PR reviews...  PR #{pr_num}"
-            click.echo(f"\r\033[K{msg}", nl=False)
+            console.print(f"\r{msg}", end="", highlight=False)
 
         elif progress.phase == "done":
             repo_total = progress.repo_total or 0
@@ -155,17 +141,11 @@ async def _run_mining(
     """
     from review_bot.persona.miner import GitHubReviewMiner
 
-    headers = {"Accept": "application/vnd.github+json"}
-    gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if gh_token:
-        headers["Authorization"] = f"Bearer {gh_token}"
+    gh_token = get_github_token()
 
     progress_handler = _create_mining_progress_handler()
 
-    async with httpx.AsyncClient(
-        headers=headers,
-        timeout=30.0,
-    ) as client:
+    async with create_github_client(gh_token) as client:
         miner = GitHubReviewMiner(client)
         kwargs: dict = {
             "progress_callback": progress_handler,

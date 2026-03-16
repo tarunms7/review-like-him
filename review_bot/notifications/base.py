@@ -119,3 +119,32 @@ class NotificationDispatcher:
             summary=summary,
             comment_count=comment_count,
         )
+
+
+def create_notifiers(settings: object) -> list[NotificationChannel]:
+    """Create notifier instances from application settings.
+
+    Args:
+        settings: A Settings instance (accepts object to avoid circular import).
+
+    Returns:
+        List of configured NotificationChannel instances. Empty if notifications disabled.
+    """
+    from review_bot.notifications.discord import DiscordNotifier
+    from review_bot.notifications.slack import SlackNotifier
+
+    if not getattr(settings, "notifications_enabled", False):
+        return []
+
+    channels: list[NotificationChannel] = []
+
+    slack_bot_token = getattr(settings, "slack_bot_token", None)
+    slack_channel = getattr(settings, "slack_channel", None)
+    if slack_bot_token and slack_channel:
+        channels.append(SlackNotifier(bot_token=slack_bot_token, channel=slack_channel))
+
+    discord_webhook_url = getattr(settings, "discord_webhook_url", None)
+    if discord_webhook_url:
+        channels.append(DiscordNotifier(webhook_url=discord_webhook_url))
+
+    return channels

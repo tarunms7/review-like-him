@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from datetime import UTC, datetime
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -25,14 +26,32 @@ from review_bot.review.severity import filter_result_by_severity
 
 logger = logging.getLogger("review-bot")
 
+
+class ProgressCallback(Protocol):
+    """Protocol for receiving granular progress updates during review."""
+
+    async def on_progress(
+        self, stage: str, message: str, percent: int | None = None,
+    ) -> None: ...
+
+
+PROGRESS_STAGES = (
+    "fetching_pr",
+    "scanning_repo",
+    "loading_persona",
+    "building_prompt",
+    "reviewing",
+    "formatting",
+    "filtering",
+    "posting",
+    "complete",
+)
+
 # PRs with more than this many files trigger multi-pass chunked review
 MULTI_PASS_THRESHOLD = 80
 
 # PRs with more than this many files get a summary-only review
 EXTREME_PR_THRESHOLD = 1000
-
-# Backward-compatible alias — kept for external consumers
-LARGE_PR_FILE_THRESHOLD: int = 500
 
 
 class ReviewOrchestrator:
@@ -48,16 +67,28 @@ class ReviewOrchestrator:
         persona_store: PersonaStore,
         db_engine: AsyncEngine | None = None,
         min_severity: int = 0,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         self._github = github_client
         self._persona_store = persona_store
         self._db_engine = db_engine
         self._min_severity = min_severity
+        self._progress_callback = progress_callback
         self._scanner = RepoScanner(github_client)
         self._prompt_builder = PromptBuilder()
         self._reviewer = ClaudeReviewer()
         self._formatter = ReviewFormatter()
         self._poster = ReviewPoster(github_client)
+
+    async def _emit_progress(
+        self, stage: str, message: str, percent: int | None = None,
+    ) -> None:
+        """Emit a progress event if a callback is registered."""
+        if self._progress_callback is not None:
+            try:
+                await self._progress_callback.on_progress(stage, message, percent)
+            except Exception as exc:
+                logger.warning("Progress callback error: %s", exc)
 
     async def run_review(
         self,
@@ -99,10 +130,16 @@ class ReviewOrchestrator:
         )
 
         # 1. Load persona
+        await self._emit_progress(
+            "loading_persona", f"Loading persona: {persona_name}", 5,
+        )
         persona = self._persona_store.load(persona_name)
         logger.info("Loaded persona '%s'", persona.name)
 
         # 2. Fetch PR data, diff, and files concurrently
+        await self._emit_progress(
+            "fetching_pr", f"Fetching PR #{pr_number} data and diff...", 10,
+        )
         pr_data = await self._github.get_pull_request(owner, repo, pr_number)
         files = await self._github.get_pull_request_files(
             owner,
@@ -149,6 +186,11 @@ class ReviewOrchestrator:
             return result
 
         # 3. Scan repo conventions
+        await self._emit_progress(
+            "scanning_repo",
+            "Scanning repository structure and conventions...",
+            25,
+        )
         repo_context = await self._scanner.scan(owner, repo)
         logger.info(
             "Repo context: languages=%s, frameworks=%s",
@@ -216,6 +258,11 @@ class ReviewOrchestrator:
             )
         else:
             # 4. Build prompt
+            await self._emit_progress(
+                "building_prompt",
+                f"Building review prompt ({len(files)} files)...",
+                40,
+            )
             prompt = self._prompt_builder.build(
                 persona=persona,
                 repo_context=repo_context,
@@ -226,10 +273,16 @@ class ReviewOrchestrator:
             )
 
             # 5. Execute LLM review
+            await self._emit_progress(
+                "reviewing", "Running AI review (pass 1/1)...", 50,
+            )
             logger.info("Executing Claude review...")
             raw_output = await self._reviewer.review(prompt)
 
             # 6. Format output
+            await self._emit_progress(
+                "formatting", "Formatting review results...", 70,
+            )
             result = self._formatter.format(
                 raw_output=raw_output,
                 persona_name=persona_name,
@@ -237,6 +290,9 @@ class ReviewOrchestrator:
             )
 
         # 6b. Apply severity filter if configured
+        await self._emit_progress(
+            "filtering", "Applying severity filters...", 80,
+        )
         if effective_severity > 0:
             result = filter_result_by_severity(result, effective_severity)
 
@@ -244,6 +300,9 @@ class ReviewOrchestrator:
         result = self._apply_comment_limit(result, repo_config.max_comments)
 
         # 7. Post review to GitHub
+        await self._emit_progress(
+            "posting", "Posting review to GitHub...", 90,
+        )
         try:
             await self._poster.post(owner, repo, pr_number, result)
         except Exception as exc:
@@ -260,6 +319,10 @@ class ReviewOrchestrator:
             pr_url,
             result,
             start_time,
+        )
+
+        await self._emit_progress(
+            "complete", f"Review complete: {result.verdict}", 100,
         )
 
         logger.info(
@@ -302,6 +365,9 @@ class ReviewOrchestrator:
         pr_url: str,
     ) -> ReviewResult:
         """Handle PRs with 1000+ files by posting a persona-aware summary comment."""
+        await self._emit_progress(
+            "posting", f"Posting summary for extreme PR ({len(files)} files)...", 90,
+        )
         added = sum(1 for f in files if f.status == "added")
         modified = sum(1 for f in files if f.status == "modified")
         removed = sum(1 for f in files if f.status == "removed")
@@ -335,6 +401,9 @@ class ReviewOrchestrator:
         except Exception as exc:
             logger.error("Failed to post large PR comment: %s", exc)
 
+        await self._emit_progress(
+            "complete", f"Review complete: {result.verdict}", 100,
+        )
         return result
 
     async def _handle_large_pr_multipass(
@@ -408,6 +477,11 @@ class ReviewOrchestrator:
             )
 
         # Build prompts for each chunk
+        await self._emit_progress(
+            "building_prompt",
+            f"Building prompts for {len(chunking_result.chunks)} chunks...",
+            40,
+        )
         prompts: list[str] = []
         for chunk in chunking_result.chunks:
             prompt = self._prompt_builder.build_chunked(
@@ -421,9 +495,15 @@ class ReviewOrchestrator:
             prompts.append(prompt)
 
         # Review all chunks concurrently (max 3 at a time)
-        raw_outputs = await self._review_chunks_concurrent(prompts, max_concurrent=3)
+        chunk_labels = [c.label for c in chunking_result.chunks]
+        raw_outputs = await self._review_chunks_concurrent(
+            prompts, max_concurrent=3, chunk_labels=chunk_labels,
+        )
 
         # Format each chunk's output
+        await self._emit_progress(
+            "formatting", "Formatting review results...", 70,
+        )
         chunk_results: list[ReviewResult] = []
         chunk_labels: list[str] = []
         for i, raw_output in enumerate(raw_outputs):
@@ -519,23 +599,33 @@ class ReviewOrchestrator:
         self,
         prompts: list[str],
         max_concurrent: int = 3,
+        chunk_labels: list[str] | None = None,
     ) -> list[str]:
         """Review multiple chunks concurrently with a semaphore limit.
 
         Args:
             prompts: List of prompt strings, one per chunk.
             max_concurrent: Maximum number of concurrent reviews.
+            chunk_labels: Optional labels for each chunk (for progress messages).
 
         Returns:
             List of raw LLM output strings, in the same order as prompts.
         """
         semaphore = asyncio.Semaphore(max_concurrent)
+        labels = chunk_labels or [f"chunk-{i + 1}" for i in range(len(prompts))]
+        total = len(prompts)
 
-        async def _review_one(prompt: str) -> str:
+        async def _review_one(idx: int, prompt: str) -> str:
             async with semaphore:
+                percent = 50 + int((idx / total) * 20)
+                await self._emit_progress(
+                    "reviewing",
+                    f"Reviewing chunk {idx + 1}/{total}: {labels[idx]}",
+                    percent,
+                )
                 return await self._reviewer.review(prompt)
 
-        tasks = [_review_one(p) for p in prompts]
+        tasks = [_review_one(i, p) for i, p in enumerate(prompts)]
         return list(await asyncio.gather(*tasks))
 
     @staticmethod

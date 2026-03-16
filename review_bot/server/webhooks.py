@@ -6,9 +6,13 @@ import hashlib
 import hmac
 import logging
 import re
+from dataclasses import dataclass
 
+import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from review_bot.persona.store import PersonaStore
+from review_bot.review.feedback import FeedbackStore
 from review_bot.server.queue import AsyncJobQueue, ReviewJob
 
 logger = logging.getLogger("review-bot")
@@ -17,18 +21,34 @@ router = APIRouter()
 
 MAX_PERSONAS_PER_PR: int = 5
 
-# Module-level references set during app startup
-_job_queue: AsyncJobQueue | None = None
-_webhook_secret: str = ""
-_persona_store = None
-_feedback_store = None
+
+@dataclass
+class WebhookContext:
+    """Runtime dependencies for webhook handlers, injected at startup."""
+
+    job_queue: AsyncJobQueue
+    webhook_secret: str
+    persona_store: PersonaStore
+    feedback_store: FeedbackStore | None = None
+
+
+_context: WebhookContext | None = None
+
+
+def _get_context() -> WebhookContext:
+    """Return the current webhook context, or raise if not configured."""
+    if _context is None:
+        raise RuntimeError(
+            "Webhook module not configured. Call configure() during app startup."
+        )
+    return _context
 
 
 def configure(
     job_queue: AsyncJobQueue,
     webhook_secret: str,
-    persona_store,
-    feedback_store=None,
+    persona_store: PersonaStore,
+    feedback_store: FeedbackStore | None = None,
 ) -> None:
     """Configure the webhook module with runtime dependencies.
 
@@ -40,11 +60,13 @@ def configure(
         persona_store: PersonaStore instance for persona lookups.
         feedback_store: Optional FeedbackStore for recording feedback events.
     """
-    global _job_queue, _webhook_secret, _persona_store, _feedback_store  # noqa: PLW0603
-    _job_queue = job_queue
-    _webhook_secret = webhook_secret
-    _persona_store = persona_store
-    _feedback_store = feedback_store
+    global _context  # noqa: PLW0603
+    _context = WebhookContext(
+        job_queue=job_queue,
+        webhook_secret=webhook_secret,
+        persona_store=persona_store,
+        feedback_store=feedback_store,
+    )
 
 
 def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -106,16 +128,17 @@ async def webhook_handler(
     Validates HMAC signature, then routes to appropriate handler
     based on the event type.
     """
+    ctx = _get_context()
     payload = await request.body()
 
     # HMAC-SHA256 signature validation
-    if _webhook_secret and not _verify_signature(
-        payload, x_hub_signature_256 or "", _webhook_secret
+    if ctx.webhook_secret and not _verify_signature(
+        payload, x_hub_signature_256 or "", ctx.webhook_secret
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     # Reject webhooks during graceful shutdown drain
-    if _job_queue is not None and getattr(_job_queue, "is_draining", False) is True:
+    if getattr(ctx.job_queue, "is_draining", False) is True:
         raise HTTPException(
             status_code=503,
             detail="Server is shutting down, not accepting new webhooks",
@@ -309,9 +332,8 @@ def _extract_owner_repo(repo_data: dict) -> tuple[str, str]:
 
 async def _persona_exists(persona_name: str) -> bool:
     """Check if a persona exists in the store."""
-    if _persona_store is None:
-        return False
-    return _persona_store.exists(persona_name)
+    ctx = _get_context()
+    return ctx.persona_store.exists(persona_name)
 
 
 async def _post_persona_not_found(
@@ -322,13 +344,12 @@ async def _post_persona_not_found(
     persona_name: str,
 ) -> None:
     """Post a comment on the PR that the persona was not found."""
+    ctx = _get_context()
     logger.warning("Persona '%s' not found, posting comment", persona_name)
-    if _job_queue is None:
-        return
     try:
         from review_bot.github.api import GitHubAPIClient
 
-        http_client = await _job_queue._github_auth.create_token_client(installation_id)
+        http_client = await ctx.job_queue._github_auth.create_token_client(installation_id)
         try:
             client = GitHubAPIClient(http_client)
             await client.post_comment(
@@ -340,7 +361,7 @@ async def _post_persona_not_found(
             )
         finally:
             await http_client.aclose()
-    except Exception:
+    except httpx.HTTPError:
         logger.exception("Failed to post persona-not-found comment for '%s'", persona_name)
 
 
@@ -352,10 +373,7 @@ async def _enqueue_review(
     installation_id: int,
 ) -> None:
     """Create and enqueue a review job."""
-    if _job_queue is None:
-        logger.error("Job queue not initialized, cannot enqueue review")
-        return
-
+    ctx = _get_context()
     job = ReviewJob(
         owner=owner,
         repo=repo,
@@ -363,7 +381,7 @@ async def _enqueue_review(
         persona_name=persona_name,
         installation_id=installation_id,
     )
-    await _job_queue.enqueue(job)
+    await ctx.job_queue.enqueue(job)
 
 
 async def _handle_review_comment_reply(data: dict) -> None:
@@ -372,7 +390,8 @@ async def _handle_review_comment_reply(data: dict) -> None:
     Detects replies to bot comments and records feedback based on
     simple sentiment analysis of the reply body.
     """
-    if _feedback_store is None:
+    ctx = _get_context()
+    if ctx.feedback_store is None:
         return
 
     comment = data.get("comment", {})
@@ -402,12 +421,12 @@ async def _handle_review_comment_reply(data: dict) -> None:
         is_pr_author=is_pr_author,
     )
     try:
-        await _feedback_store.record_feedback(event)
+        await ctx.feedback_store.record_feedback(event)
         logger.info(
             "Recorded %s reply feedback from %s on comment %d",
             feedback_type, username, in_reply_to_id,
         )
-    except Exception:
+    except (httpx.HTTPError, KeyError, ValueError):
         logger.exception("Failed to record reply feedback for comment %d", in_reply_to_id)
 
 
@@ -416,7 +435,8 @@ async def _handle_review_dismissed(data: dict) -> None:
 
     Creates negative feedback for all tracked comments in the dismissed review.
     """
-    if _feedback_store is None:
+    ctx = _get_context()
+    if ctx.feedback_store is None:
         return
 
     # The person who dismissed the review
@@ -447,12 +467,12 @@ async def _handle_review_dismissed(data: dict) -> None:
         is_pr_author=is_pr_author,
     )
     try:
-        await _feedback_store.record_feedback(event)
+        await ctx.feedback_store.record_feedback(event)
         logger.info(
             "Recorded dismissed review feedback from %s for review %s",
             sender, review_id,
         )
-    except Exception:
+    except (httpx.HTTPError, KeyError):
         logger.exception("Failed to record dismissed review feedback for %s", review_id)
 
 

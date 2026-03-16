@@ -61,7 +61,7 @@ class DiscordNotifier:
             elif response.status_code >= 400:
                 logger.error("Discord webhook error: HTTP %d", response.status_code)
             return False
-        except Exception:
+        except httpx.HTTPError:
             logger.exception("Failed to send Discord notification")
             return False
 

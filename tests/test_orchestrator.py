@@ -15,7 +15,6 @@ from review_bot.review.formatter import (
 )
 from review_bot.review.orchestrator import (
     EXTREME_PR_THRESHOLD,
-    LARGE_PR_FILE_THRESHOLD,
     MULTI_PASS_THRESHOLD,
     ReviewOrchestrator,
 )
@@ -350,18 +349,6 @@ class TestPersonaLoading:
 
         with pytest.raises(FileNotFoundError):
             await orch.run_review("owner", "repo", 42, "nonexistent")
-
-
-# ---------------------------------------------------------------------------
-# Backward Compatibility Constants
-# ---------------------------------------------------------------------------
-
-
-class TestBackwardCompatConstants:
-    """Verify backward-compatible constants are exported."""
-
-    def test_large_pr_file_threshold_exists(self):
-        assert LARGE_PR_FILE_THRESHOLD == 500
 
 
 # ---------------------------------------------------------------------------

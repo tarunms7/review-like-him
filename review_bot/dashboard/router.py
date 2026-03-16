@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from review_bot.dashboard import queries
 
@@ -32,21 +33,21 @@ async def overview(request: Request):
     engine = _get_engine(request)
     try:
         review_counts = await queries.get_review_counts(engine)
-    except Exception:
+    except (OperationalError, SQLAlchemyError):
         logger.exception("Failed to get review counts")
         review_counts = {"24h": 0, "7d": 0, "30d": 0}
 
     try:
         persona_stats = await queries.get_persona_stats(engine)
         active_personas = len(persona_stats)
-    except Exception:
+    except (OperationalError, SQLAlchemyError):
         logger.exception("Failed to get persona stats")
         active_personas = 0
 
     try:
         snapshot = await queries.get_queue_snapshot(engine)
         queue_depth = len(snapshot["queued"]) + len(snapshot["running"])
-    except Exception:
+    except (OperationalError, SQLAlchemyError):
         logger.exception("Failed to get queue snapshot")
         queue_depth = 0
 
@@ -55,7 +56,7 @@ async def overview(request: Request):
     try:
         job_queue = request.app.state.job_queue
         worker_status = job_queue.worker_status
-    except Exception:
+    except AttributeError:
         pass
 
     return templates.TemplateResponse(
@@ -87,7 +88,7 @@ async def activity(
         rows, total_count = await queries.get_activity_page(
             engine, page=page, per_page=per_page, persona=persona, repo=repo
         )
-    except Exception:
+    except (OperationalError, SQLAlchemyError):
         logger.exception("Failed to get activity page")
         rows, total_count = [], 0
 
@@ -111,7 +112,7 @@ async def personas(request: Request):
     engine = _get_engine(request)
     try:
         persona_stats = await queries.get_persona_stats(engine)
-    except Exception:
+    except (OperationalError, SQLAlchemyError):
         logger.exception("Failed to get persona stats")
         persona_stats = []
 
@@ -130,7 +131,7 @@ async def queue(request: Request):
     engine = _get_engine(request)
     try:
         snapshot = await queries.get_queue_snapshot(engine)
-    except Exception:
+    except (OperationalError, SQLAlchemyError):
         logger.exception("Failed to get queue snapshot")
         snapshot = {"queued": [], "running": [], "failed": []}
 
@@ -175,7 +176,7 @@ async def config(request: Request):
         persona_store = request.app.state.persona_store
         all_personas = persona_store.list_all()
         persona_list = [{"name": p.name} for p in all_personas]
-    except Exception:
+    except AttributeError:
         logger.exception("Failed to load persona list for dashboard config")
 
     return templates.TemplateResponse(
