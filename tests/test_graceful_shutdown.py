@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from review_bot.config.settings import Settings
-from review_bot.server.queue import AsyncJobQueue, ReviewJob
+from review_bot.server.queue import AsyncJobQueue, GitHubProgressCallback, ReviewJob
 from review_bot.server.webhooks import configure, router
 
 # ---------------------------------------------------------------------------
@@ -126,14 +126,76 @@ class TestDrainNoInflightReturnsImmediately:
         )
         await queue.start_worker()
 
-        # Drain should complete immediately when no jobs are running
-        if hasattr(queue, "drain"):
-            result = await queue.drain(timeout=5.0)
-            assert result is True
-        else:
-            # drain not yet implemented, test the interface contract
-            await queue.stop_worker()
-            assert queue.worker_status == "stopped"
+        result = await queue.drain(timeout=5.0)
+        assert result is True
+        assert queue.is_draining is True
+
+        await queue.stop_worker()
+
+
+class TestDrainTimeoutReturnsFalse:
+    """Test drain returns False when job is in-flight and timeout expires."""
+
+    @pytest.mark.asyncio()
+    async def test_drain_timeout(self) -> None:
+        """Drain returns False when current job doesn't finish in time."""
+        engine = _make_mock_engine()
+        github_auth = MagicMock()
+        persona_store = MagicMock()
+
+        queue = AsyncJobQueue(
+            db_engine=engine,
+            github_auth=github_auth,
+            persona_store=persona_store,
+        )
+        # Simulate an in-flight job
+        queue._current_job_id = "fake-job-id"
+
+        result = await queue.drain(timeout=0.3)
+        assert result is False
+        assert queue.is_draining is True
+
+    @pytest.mark.asyncio()
+    async def test_drain_zero_timeout_returns_immediately(self) -> None:
+        """Drain with timeout=0 returns immediately based on current state."""
+        engine = _make_mock_engine()
+        queue = AsyncJobQueue(
+            db_engine=engine,
+            github_auth=MagicMock(),
+            persona_store=MagicMock(),
+        )
+
+        # No in-flight job → True
+        result = await queue.drain(timeout=0)
+        assert result is True
+
+        # Reset draining state for next test
+        queue._is_draining = False
+
+        # With in-flight job → False
+        queue._current_job_id = "fake-job-id"
+        result = await queue.drain(timeout=0)
+        assert result is False
+
+
+class TestDrainDefaultTimeout:
+    """Test drain uses constructor drain_timeout when timeout is None."""
+
+    @pytest.mark.asyncio()
+    async def test_drain_uses_default_timeout(self) -> None:
+        """drain() with no argument uses self._drain_timeout."""
+        engine = _make_mock_engine()
+        queue = AsyncJobQueue(
+            db_engine=engine,
+            github_auth=MagicMock(),
+            persona_store=MagicMock(),
+            drain_timeout=0.2,
+        )
+        queue._current_job_id = "fake-job-id"
+
+        result = await queue.drain()
+        assert result is False
+        assert queue.is_draining is True
 
 
 class TestWebhookRejectsDuringDrain503:
@@ -200,3 +262,180 @@ class TestEnqueueBeforeDrainSucceeds:
         # Should succeed without error
         job_id = await queue.enqueue(job)
         assert job_id == job.id
+
+
+# ---------------------------------------------------------------------------
+# GitHubProgressCallback Tests
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubProgressCallback:
+    """Tests for the live progress comment callback."""
+
+    @pytest.mark.asyncio()
+    async def test_on_progress_posts_new_comment(self) -> None:
+        """First call to on_progress creates a new comment."""
+        mock_client = MagicMock()
+        mock_client.post_comment = AsyncMock(return_value={"id": 42})
+
+        cb = GitHubProgressCallback(
+            github_client=mock_client,
+            owner="owner", repo="repo", pr_number=1,
+            persona_name="alice",
+        )
+        await cb.on_progress("fetching_pr", "Loading PR data", percent=10)
+
+        mock_client.post_comment.assert_called_once()
+        call_body = mock_client.post_comment.call_args[0][3]
+        assert "alice-bot" in call_body
+        assert "10%" in call_body
+        assert cb._comment_id == 42
+
+    @pytest.mark.asyncio()
+    async def test_on_progress_updates_existing_comment(self) -> None:
+        """Subsequent calls PATCH the existing comment."""
+        mock_client = MagicMock()
+        mock_client.post_comment = AsyncMock(return_value={"id": 42})
+        mock_client.update_comment = AsyncMock(return_value={"id": 42})
+
+        cb = GitHubProgressCallback(
+            github_client=mock_client,
+            owner="owner", repo="repo", pr_number=1,
+            persona_name="alice",
+        )
+        await cb.on_progress("fetching_pr", "Loading", percent=10)
+        await cb.on_progress("reviewing", "Analyzing", percent=60)
+
+        mock_client.update_comment.assert_called_once()
+        call_body = mock_client.update_comment.call_args[0][2]
+        assert "60%" in call_body
+
+    @pytest.mark.asyncio()
+    async def test_on_progress_without_percent(self) -> None:
+        """on_progress works without a percent argument."""
+        mock_client = MagicMock()
+        mock_client.post_comment = AsyncMock(return_value={"id": 42})
+
+        cb = GitHubProgressCallback(
+            github_client=mock_client,
+            owner="owner", repo="repo", pr_number=1,
+            persona_name="alice",
+        )
+        await cb.on_progress("fetching_pr", "Loading PR data")
+
+        mock_client.post_comment.assert_called_once()
+        call_body = mock_client.post_comment.call_args[0][3]
+        assert "alice-bot" in call_body
+        # No progress bar when percent is None
+        assert "%" not in call_body
+
+    @pytest.mark.asyncio()
+    async def test_on_progress_handles_post_error(self) -> None:
+        """on_progress swallows errors without crashing."""
+        mock_client = MagicMock()
+        mock_client.post_comment = AsyncMock(side_effect=RuntimeError("network error"))
+
+        cb = GitHubProgressCallback(
+            github_client=mock_client,
+            owner="owner", repo="repo", pr_number=1,
+            persona_name="alice",
+        )
+        # Should not raise
+        await cb.on_progress("fetching_pr", "Loading PR data", percent=10)
+        assert cb._comment_id is None
+
+    @pytest.mark.asyncio()
+    async def test_delete_removes_comment(self) -> None:
+        """delete() calls delete_comment with stored ID."""
+        mock_client = MagicMock()
+        mock_client.delete_comment = AsyncMock()
+
+        cb = GitHubProgressCallback(
+            github_client=mock_client,
+            owner="owner", repo="repo", pr_number=1,
+            persona_name="alice",
+        )
+        cb._comment_id = 42
+
+        await cb.delete()
+        mock_client.delete_comment.assert_called_once_with("owner", "repo", 42)
+
+    @pytest.mark.asyncio()
+    async def test_delete_noop_when_no_comment(self) -> None:
+        """delete() does nothing if no comment was ever posted."""
+        mock_client = MagicMock()
+        mock_client.delete_comment = AsyncMock()
+
+        cb = GitHubProgressCallback(
+            github_client=mock_client,
+            owner="owner", repo="repo", pr_number=1,
+            persona_name="alice",
+        )
+        await cb.delete()
+        mock_client.delete_comment.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_delete_handles_error(self) -> None:
+        """delete() swallows errors without crashing."""
+        mock_client = MagicMock()
+        mock_client.delete_comment = AsyncMock(side_effect=RuntimeError("network error"))
+
+        cb = GitHubProgressCallback(
+            github_client=mock_client,
+            owner="owner", repo="repo", pr_number=1,
+            persona_name="alice",
+        )
+        cb._comment_id = 42
+
+        # Should not raise
+        await cb.delete()
+
+
+# ---------------------------------------------------------------------------
+# set_notification_dispatcher Tests
+# ---------------------------------------------------------------------------
+
+
+class TestSetNotificationDispatcher:
+    """Tests for the set_notification_dispatcher method."""
+
+    def test_setter_wires_dispatcher(self) -> None:
+        """set_notification_dispatcher stores the dispatcher."""
+        engine = _make_mock_engine()
+        queue = AsyncJobQueue(
+            db_engine=engine,
+            github_auth=MagicMock(),
+            persona_store=MagicMock(),
+        )
+        dispatcher = MagicMock()
+        queue.set_notification_dispatcher(dispatcher)
+        assert queue._notification_dispatcher is dispatcher
+
+
+# ---------------------------------------------------------------------------
+# Progress bar helper Tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildProgressBar:
+    """Tests for the _build_progress_bar helper."""
+
+    def test_zero_percent(self) -> None:
+        from review_bot.server.queue import _build_progress_bar
+
+        result = _build_progress_bar(0)
+        assert "0%" in result
+        assert "█" not in result
+
+    def test_fifty_percent(self) -> None:
+        from review_bot.server.queue import _build_progress_bar
+
+        result = _build_progress_bar(50)
+        assert "50%" in result
+
+    def test_hundred_percent(self) -> None:
+        from review_bot.server.queue import _build_progress_bar
+
+        result = _build_progress_bar(100)
+        assert "100%" in result
+        assert "░" not in result
