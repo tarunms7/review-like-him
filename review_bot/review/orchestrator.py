@@ -31,9 +31,6 @@ MULTI_PASS_THRESHOLD = 80
 # PRs with more than this many files get a summary-only review
 EXTREME_PR_THRESHOLD = 1000
 
-# Backward-compatible alias — kept for external consumers
-LARGE_PR_FILE_THRESHOLD: int = 500
-
 
 class ReviewOrchestrator:
     """Main review pipeline: persona → PR → scan → prompt → review → post.
