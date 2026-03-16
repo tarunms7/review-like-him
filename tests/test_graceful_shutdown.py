@@ -33,8 +33,10 @@ def _make_mock_engine() -> MagicMock:
     engine.dispose = AsyncMock()
 
     # Support async context manager for begin()
+    mock_result = MagicMock()
+    mock_result.scalar.return_value = 0
     conn = MagicMock()
-    conn.execute = AsyncMock()
+    conn.execute = AsyncMock(return_value=mock_result)
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=conn)
     ctx.__aexit__ = AsyncMock(return_value=False)
@@ -307,7 +309,7 @@ class TestGitHubProgressCallback:
         await cb.on_progress("reviewing", "Analyzing", percent=60)
 
         mock_client.update_comment.assert_called_once()
-        call_body = mock_client.update_comment.call_args[0][2]
+        call_body = mock_client.update_comment.call_args[0][3]
         assert "60%" in call_body
 
     @pytest.mark.asyncio()
