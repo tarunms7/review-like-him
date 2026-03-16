@@ -42,7 +42,8 @@ def _validate_ref(ref: str, name: str = "ref") -> None:
     if not _REF_PATTERN.match(ref):
         raise ValueError(
             f"Invalid git {name}: {ref!r}. "
-            f"Refs must contain only alphanumeric characters, dots, hyphens, underscores, and slashes."
+            "Refs must contain only alphanumeric characters, "
+            "dots, hyphens, underscores, and slashes."
         )
 
 
