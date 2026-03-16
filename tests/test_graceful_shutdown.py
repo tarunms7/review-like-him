@@ -295,10 +295,13 @@ class TestGitHubProgressCallback:
 
     @pytest.mark.asyncio()
     async def test_on_progress_updates_existing_comment(self) -> None:
-        """Subsequent calls PATCH the existing comment."""
+        """Subsequent calls PATCH the existing comment via _update_comment."""
         mock_client = MagicMock()
         mock_client.post_comment = AsyncMock(return_value={"id": 42})
-        mock_client.update_comment = AsyncMock(return_value={"id": 42})
+        # Mock _request for PATCH calls (used by _update_comment)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"id": 42, "body": "updated"}
+        mock_client._request = AsyncMock(return_value=mock_resp)
 
         cb = GitHubProgressCallback(
             github_client=mock_client,
@@ -308,9 +311,11 @@ class TestGitHubProgressCallback:
         await cb.on_progress("fetching_pr", "Loading", percent=10)
         await cb.on_progress("reviewing", "Analyzing", percent=60)
 
-        mock_client.update_comment.assert_called_once()
-        call_body = mock_client.update_comment.call_args[0][3]
-        assert "60%" in call_body
+        mock_client._request.assert_called_once()
+        call_args = mock_client._request.call_args
+        assert call_args[0][0] == "PATCH"
+        body_kwarg = call_args[1]["json"]["body"]
+        assert "60%" in body_kwarg
 
     @pytest.mark.asyncio()
     async def test_on_progress_without_percent(self) -> None:
@@ -348,9 +353,9 @@ class TestGitHubProgressCallback:
 
     @pytest.mark.asyncio()
     async def test_delete_removes_comment(self) -> None:
-        """delete() calls delete_comment with stored ID."""
+        """delete() issues DELETE via _request with stored comment ID."""
         mock_client = MagicMock()
-        mock_client.delete_comment = AsyncMock()
+        mock_client._request = AsyncMock()
 
         cb = GitHubProgressCallback(
             github_client=mock_client,
@@ -360,13 +365,16 @@ class TestGitHubProgressCallback:
         cb._comment_id = 42
 
         await cb.delete()
-        mock_client.delete_comment.assert_called_once_with("owner", "repo", 42)
+        mock_client._request.assert_called_once()
+        call_args = mock_client._request.call_args
+        assert call_args[0][0] == "DELETE"
+        assert "/issues/comments/42" in call_args[0][1]
 
     @pytest.mark.asyncio()
     async def test_delete_noop_when_no_comment(self) -> None:
         """delete() does nothing if no comment was ever posted."""
         mock_client = MagicMock()
-        mock_client.delete_comment = AsyncMock()
+        mock_client._request = AsyncMock()
 
         cb = GitHubProgressCallback(
             github_client=mock_client,
@@ -374,13 +382,13 @@ class TestGitHubProgressCallback:
             persona_name="alice",
         )
         await cb.delete()
-        mock_client.delete_comment.assert_not_called()
+        mock_client._request.assert_not_called()
 
     @pytest.mark.asyncio()
     async def test_delete_handles_error(self) -> None:
         """delete() swallows errors without crashing."""
         mock_client = MagicMock()
-        mock_client.delete_comment = AsyncMock(side_effect=RuntimeError("network error"))
+        mock_client._request = AsyncMock(side_effect=RuntimeError("network error"))
 
         cb = GitHubProgressCallback(
             github_client=mock_client,
