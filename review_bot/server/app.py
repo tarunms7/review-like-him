@@ -15,6 +15,7 @@ from review_bot.config.paths import ensure_directories
 from review_bot.config.settings import Settings
 from review_bot.github.app import GitHubAppAuth
 from review_bot.persona.store import PersonaStore
+from review_bot.dashboard.router import router as dashboard_router
 from review_bot.server.health import router as health_router
 from review_bot.server.health import set_start_time
 from review_bot.server.queue import AsyncJobQueue
@@ -259,5 +260,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(router)
     app.include_router(health_router)
     app.include_router(status_router)
+    app.include_router(dashboard_router)
+
+    from pathlib import Path as _Path
+
+    from fastapi.staticfiles import StaticFiles
+
+    _dashboard_static = _Path(__file__).resolve().parent.parent / "dashboard" / "static"
+    if _dashboard_static.is_dir():
+        app.mount("/static", StaticFiles(directory=str(_dashboard_static)), name="dashboard-static")
 
     return app
