@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 import click
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 logger = logging.getLogger("review-bot")
 
@@ -50,6 +54,24 @@ def migrate_db(source: str, target: str, dry_run: bool) -> None:
         )
     )
     asyncio.run(_run_migration(source, target, dry_run))
+
+
+async def _drop_migration_tables(engine: AsyncEngine) -> None:
+    """Drop all migration tables from the target database for rollback.
+
+    Drops tables in reverse dependency order to avoid FK constraint issues.
+
+    Args:
+        engine: SQLAlchemy async engine connected to the target database.
+    """
+    from sqlalchemy import text
+
+    # Reverse of migration order to respect potential FK dependencies
+    tables = ("review_feedback", "review_comment_tracking", "persona_stats", "jobs", "reviews")
+    async with engine.begin() as conn:
+        for table in tables:
+            await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
+    logger.info("Rolled back migration schema — dropped all migration tables")
 
 
 async def _run_migration(source: str, target: str, dry_run: bool) -> None:
@@ -132,6 +154,8 @@ async def _run_migration(source: str, target: str, dry_run: bool) -> None:
 
             click.echo("Importing data to PostgreSQL...")
             try:
+                # import_to_postgresql uses engine.begin() internally,
+                # so data inserts are automatically rolled back on exception.
                 counts = await import_to_postgresql(target_engine, data)
             except Exception as import_exc:
                 click.echo(
@@ -141,14 +165,28 @@ async def _run_migration(source: str, target: str, dry_run: bool) -> None:
                     ),
                     err=True,
                 )
-                click.echo(
-                    click.style(
-                        "The target database may be in a partially imported state. "
-                        "Consider dropping and re-creating the target schema before retrying.",
-                        fg="yellow",
-                    ),
-                    err=True,
-                )
+                # Data inserts were rolled back by the transaction in
+                # import_to_postgresql.  Now drop the schema tables we
+                # created so the target DB is back to its pre-migration state.
+                click.echo("Rolling back schema changes...", err=True)
+                try:
+                    await _drop_migration_tables(target_engine)
+                    click.echo(
+                        click.style(
+                            "Rollback complete — target database restored to pre-migration state.",
+                            fg="yellow",
+                        ),
+                        err=True,
+                    )
+                except Exception as rollback_exc:
+                    click.echo(
+                        click.style(
+                            f"Rollback failed: {rollback_exc}. "
+                            "Manual cleanup of target schema may be required.",
+                            fg="red",
+                        ),
+                        err=True,
+                    )
                 sys.exit(1)
 
             click.echo("\nImport summary:")

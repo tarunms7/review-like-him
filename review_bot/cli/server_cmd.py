@@ -223,17 +223,17 @@ def server_status() -> None:
     if pid is not None:
         running = True
     else:
-        # Check both localhost and 0.0.0.0 (server may bind to either)
-        for check_host in ("127.0.0.1", "0.0.0.0"):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(1)
-                    result = sock.connect_ex((check_host, settings.port))
-                    if result == 0:
-                        running = True
-                        break
-            except OSError:
-                continue
+        # Check 127.0.0.1 — a server bound to 0.0.0.0 listens on all
+        # interfaces including loopback, so 127.0.0.1 covers both cases.
+        # Note: connecting *to* 0.0.0.0 is invalid (not a routable address).
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1)
+                result = sock.connect_ex(("127.0.0.1", settings.port))
+                if result == 0:
+                    running = True
+        except OSError:
+            pass
 
     click.echo(click.style("\n═══ review-bot Status ═══\n", fg="cyan", bold=True))
 
