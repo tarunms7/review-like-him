@@ -7,19 +7,27 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-STATUS_URL = "http://localhost:8787/status"
+from review_bot.config.settings import Settings
 
 
 @click.command()
-def status_cmd() -> None:
+@click.option("--port", type=int, default=None, help="Server port (default: from config)")
+def status_cmd(port: int | None) -> None:
     """Show current GitHub API rate limit state from the running server."""
+    settings = Settings()
+    effective_port = port if port is not None else settings.port
+    if effective_port < 1 or effective_port > 65535:
+        click.echo(click.style(f"Invalid port: {effective_port}", fg="red"))
+        raise SystemExit(1)
+    status_url = f"http://localhost:{effective_port}/status"
+
     try:
-        response = httpx.get(STATUS_URL, timeout=5.0)
+        response = httpx.get(status_url, timeout=5.0)
         response.raise_for_status()
     except httpx.ConnectError:
         click.echo(
             click.style(
-                "Could not connect to review-bot server at localhost:8787. "
+                f"Could not connect to review-bot server at localhost:{effective_port}. "
                 "Is it running?",
                 fg="red",
             )
