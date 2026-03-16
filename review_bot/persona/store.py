@@ -6,6 +6,9 @@ import json
 import logging
 from pathlib import Path
 
+import yaml
+from pydantic import ValidationError
+
 from review_bot.config.paths import PERSONAS_DIR
 from review_bot.persona.profile import PersonaProfile
 
@@ -53,8 +56,8 @@ class PersonaStore:
             try:
                 yaml_str = path.read_text(encoding="utf-8")
                 profiles.append(PersonaProfile.from_yaml(yaml_str))
-            except Exception:
-                logger.warning("Failed to load persona from %s", path, exc_info=True)
+            except (yaml.YAMLError, ValidationError, OSError) as exc:
+                logger.warning("Failed to load persona from %s: %s", path, exc, exc_info=True)
         return profiles
 
     def delete(self, name: str) -> None:
