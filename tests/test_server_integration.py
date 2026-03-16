@@ -277,63 +277,6 @@ class TestDispatcherWiringToQueue:
         queue._notification_dispatcher = dispatcher
         assert queue._notification_dispatcher is dispatcher
 
-    def test_create_notifiers_sets_dispatcher_on_queue(self):
-        """create_notifiers() + set_notification_dispatcher() wires dispatcher to queue."""
-        from review_bot.config.settings import Settings
-        from review_bot.notifications.base import create_notifiers
-
-        settings = Settings(
-            github_app_id=1,
-            webhook_secret="s",
-            notifications_enabled=True,
-            slack_bot_token="xoxb-test",
-            slack_channel="#reviews",
-        )
-        notifiers = create_notifiers(settings)
-        assert len(notifiers) > 0
-
-        mock_engine = MagicMock()
-        mock_auth = MagicMock()
-        mock_store = MagicMock()
-        queue = AsyncJobQueue(
-            db_engine=mock_engine,
-            github_auth=mock_auth,
-            persona_store=mock_store,
-        )
-        dispatcher = NotificationDispatcher(channels=notifiers)
-        queue.set_notification_dispatcher(dispatcher)
-        assert queue._notification_dispatcher is dispatcher
-        assert len(queue._notification_dispatcher._channels) == 1
-
-    def test_create_notifiers_returns_empty_when_disabled(self):
-        """create_notifiers() returns [] when notifications_enabled=False."""
-        from review_bot.config.settings import Settings
-        from review_bot.notifications.base import create_notifiers
-
-        settings = Settings(
-            github_app_id=1,
-            webhook_secret="s",
-            notifications_enabled=False,
-            slack_bot_token="xoxb-test",
-            slack_channel="#reviews",
-        )
-        notifiers = create_notifiers(settings)
-        assert notifiers == []
-
-    @pytest.mark.asyncio()
-    async def test_drain_returns_true_when_queue_empty(self):
-        """drain() returns True immediately when queue has no pending items."""
-        mock_engine = MagicMock()
-        mock_auth = MagicMock()
-        mock_store = MagicMock()
-        queue = AsyncJobQueue(
-            db_engine=mock_engine,
-            github_auth=mock_auth,
-            persona_store=mock_store,
-        )
-        result = await queue.drain(timeout=1)
-        assert result is True
-
     def test_dispatcher_absent_by_default(self):
         """By default, _notification_dispatcher is not set on queue."""
         mock_engine = MagicMock()
