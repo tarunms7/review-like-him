@@ -10,7 +10,6 @@ import click
 from review_bot.cli.utils import _run_async, create_github_client, get_github_token
 from review_bot.persona.store import PersonaStore
 
-
 _PR_URL_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)")
 
 
