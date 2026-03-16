@@ -21,6 +21,21 @@ _webhook_secret: str = ""
 _persona_store = None
 _feedback_store = None
 
+# Maximum allowed webhook payload size (1 MB)
+_MAX_PAYLOAD_BYTES = 1_048_576
+
+# Allowed GitHub webhook event types
+_ALLOWED_EVENTS: set[str] = {
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "issue_comment",
+}
+
+# Validation patterns for owner and repo names
+_OWNER_PATTERN = re.compile(r"^[a-zA-Z0-9\-]+$")
+_REPO_PATTERN = re.compile(r"^[a-zA-Z0-9\-\.]+$")
+
 
 def configure(
     job_queue: AsyncJobQueue,
@@ -46,13 +61,13 @@ def configure(
 
 
 def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
-    """Verify GitHub HMAC-SHA256 webhook signature."""
+    """Verify GitHub HMAC-SHA256 webhook signature.
+
+    Returns False when secret is empty/None — callers must reject
+    webhooks when no secret is configured.
+    """
     if not secret:
-        logger.warning(
-            "Webhook secret is not configured — HMAC validation is disabled. "
-            "Set REVIEW_BOT_WEBHOOK_SECRET for production use."
-        )
-        return True  # No secret configured, skip validation
+        return False
     if not signature:
         return False
     expected = "sha256=" + hmac.new(
@@ -93,6 +108,20 @@ def _parse_review_command(body: str) -> list[str]:
     return personas
 
 
+def _validate_pr_number(pr_number: int) -> None:
+    """Validate that pr_number is positive, raise 422 if not."""
+    if pr_number <= 0:
+        raise HTTPException(status_code=422, detail="Invalid pr_number: must be > 0")
+
+
+def _validate_installation_id(installation_id: int) -> None:
+    """Validate that installation_id is positive, raise 422 if not."""
+    if installation_id <= 0:
+        raise HTTPException(
+            status_code=422, detail="Invalid installation_id: must be > 0"
+        )
+
+
 @router.post("/webhook")
 async def webhook_handler(
     request: Request,
@@ -106,11 +135,24 @@ async def webhook_handler(
     """
     payload = await request.body()
 
+    # Reject oversized payloads
+    if len(payload) > _MAX_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Payload too large")
+
+    # Reject webhooks if secret is not configured
+    if not _webhook_secret:
+        raise HTTPException(status_code=403, detail="Webhook secret not configured")
+
     # HMAC-SHA256 signature validation
-    if _webhook_secret and not _verify_signature(
-        payload, x_hub_signature_256 or "", _webhook_secret
-    ):
+    if not _verify_signature(payload, x_hub_signature_256 or "", _webhook_secret):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    # Validate event type against allowed set
+    event = x_github_event or ""
+    if event not in _ALLOWED_EVENTS:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown event type: {event}"
+        )
 
     # Reject webhooks during graceful shutdown drain
     if _job_queue is not None and getattr(_job_queue, "is_draining", False) is True:
@@ -120,7 +162,6 @@ async def webhook_handler(
         )
 
     data = await request.json()
-    event = x_github_event or ""
 
     logger.info("Received webhook event: %s", event)
 
@@ -160,6 +201,9 @@ async def _handle_review_requested(data: dict) -> None:
     pr_number = pr.get("number", 0)
     installation_id = installation.get("id", 0)
 
+    _validate_pr_number(pr_number)
+    _validate_installation_id(installation_id)
+
     if not await _persona_exists(persona_name):
         await _post_persona_not_found(
             owner, repo_name, pr_number, installation_id, persona_name
@@ -191,6 +235,9 @@ async def _handle_issue_comment(data: dict) -> None:
     owner, repo_name = _extract_owner_repo(repo)
     pr_number = issue.get("number", 0)
     installation_id = installation.get("id", 0)
+
+    _validate_pr_number(pr_number)
+    _validate_installation_id(installation_id)
 
     for persona_name in personas:
         if not await _persona_exists(persona_name):
@@ -225,6 +272,9 @@ async def _handle_label_event(data: dict) -> None:
     pr_number = pr.get("number", 0)
     installation_id = installation.get("id", 0)
 
+    _validate_pr_number(pr_number)
+    _validate_installation_id(installation_id)
+
     if not await _persona_exists(persona_name):
         await _post_persona_not_found(
             owner, repo_name, pr_number, installation_id, persona_name
@@ -235,10 +285,22 @@ async def _handle_label_event(data: dict) -> None:
 
 
 def _extract_owner_repo(repo_data: dict) -> tuple[str, str]:
-    """Extract owner and repo name from repository webhook payload."""
+    """Extract and validate owner and repo name from repository webhook payload.
+
+    Returns (owner, repo) if both pass validation, or (None, None) tuple
+    values replaced with empty strings for compatibility if invalid.
+    """
     full_name = repo_data.get("full_name", "/")
     parts = full_name.split("/", 1)
-    return parts[0], parts[1] if len(parts) > 1 else ""
+    owner = parts[0]
+    repo_name = parts[1] if len(parts) > 1 else ""
+
+    if not owner or not _OWNER_PATTERN.match(owner):
+        return ("", "")
+    if not repo_name or not _REPO_PATTERN.match(repo_name):
+        return ("", "")
+
+    return owner, repo_name
 
 
 async def _persona_exists(persona_name: str) -> bool:

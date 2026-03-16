@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -16,6 +17,36 @@ from review_bot.persona.store import PersonaStore
 from review_bot.review.orchestrator import ReviewOrchestrator
 
 logger = logging.getLogger("review-bot")
+
+# Pattern matching GitHub token prefixes for sanitization
+_TOKEN_PATTERN = re.compile(r"(ghp_|ghs_|github_pat_)[a-zA-Z0-9_]+")
+
+# Pattern matching file paths for sanitization
+_FILE_PATH_PATTERN = re.compile(r"(/[a-zA-Z0-9_./-]+){2,}")
+
+# Maximum length for error messages stored in DB
+_ERROR_MAX_LENGTH = 500
+
+
+def _sanitize_error_message(message: str) -> str:
+    """Sanitize an error message before storing in the database.
+
+    Strips file paths, removes token-like strings, and truncates.
+    """
+    if not message:
+        return message
+
+    # Remove token patterns
+    sanitized = _TOKEN_PATTERN.sub("***", message)
+
+    # Strip file paths
+    sanitized = _FILE_PATH_PATTERN.sub("<path>", sanitized)
+
+    # Truncate to max length
+    if len(sanitized) > _ERROR_MAX_LENGTH:
+        sanitized = sanitized[:_ERROR_MAX_LENGTH]
+
+    return sanitized
 
 
 class ReviewJob:
@@ -60,6 +91,12 @@ class AsyncJobQueue:
         self._persona_store = persona_store
         self._worker_task: asyncio.Task | None = None
         self._current_job_id: str | None = None
+        self._drain_event: asyncio.Event = asyncio.Event()
+
+    @property
+    def is_draining(self) -> bool:
+        """Return True if the queue is in drain mode (shutting down)."""
+        return self._drain_event.is_set()
 
     @property
     def queue_depth(self) -> int:
@@ -96,10 +133,22 @@ class AsyncJobQueue:
     async def enqueue(self, job: ReviewJob) -> str:
         """Add a review job to the queue and persist status.
 
+        Persists to DB first, then adds to asyncio.Queue. If queue.put
+        fails, the job is marked as 'failed' in the database.
+
         Returns the job ID.
         """
         await self._persist_job(job)
-        await self._queue.put(job)
+        try:
+            await self._queue.put(job)
+        except Exception:
+            logger.exception("Failed to add job %s to queue, marking as failed", job.id)
+            job.status = "failed"
+            job.completed_at = datetime.now(tz=UTC).isoformat()
+            job.error_message = _sanitize_error_message("Failed to enqueue job")
+            await self._update_job_status(job)
+            return job.id
+
         logger.info(
             "Enqueued job %s: %s/%s#%d as '%s'",
             job.id,
@@ -117,6 +166,7 @@ class AsyncJobQueue:
 
     async def stop_worker(self) -> None:
         """Stop the background worker loop gracefully."""
+        self._drain_event.set()
         if self._worker_task is not None:
             self._worker_task.cancel()
             try:
@@ -183,7 +233,7 @@ class AsyncJobQueue:
             except Exception as exc:
                 job.status = "failed"
                 job.completed_at = datetime.now(tz=UTC).isoformat()
-                job.error_message = str(exc)
+                job.error_message = _sanitize_error_message(str(exc))
                 logger.error("Job %s failed: %s", job.id, exc)
 
                 # Try to post error comment on the PR

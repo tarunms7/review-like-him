@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Header, Request, Response
 
 logger = logging.getLogger("review-bot")
 
 # Module-level state for uptime tracking
 _start_time: float | None = None
+
+# Internal token for exposing detailed health info (set via env var)
+_INTERNAL_TOKEN: str = os.environ.get("REVIEW_BOT_INTERNAL_TOKEN", "")
 
 router = APIRouter(tags=["health"])
 
@@ -44,16 +48,49 @@ class CheckResult:
     detail: str
     duration_ms: float | None = field(default=None)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, internal: bool = True) -> dict:
         """Convert to a plain dict for JSON serialization.
+
+        Args:
+            internal: If True, include duration_ms and full detail.
+                      If False, strip internal details for public responses.
 
         Returns:
             Dict with status, detail, and optional duration_ms.
         """
-        result: dict = {"status": self.status, "detail": self.detail}
-        if self.duration_ms is not None:
-            result["duration_ms"] = self.duration_ms
-        return result
+        if internal:
+            result: dict = {"status": self.status, "detail": self.detail}
+            if self.duration_ms is not None:
+                result["duration_ms"] = self.duration_ms
+            return result
+
+        # Public response: strip internal details from detail string
+        detail = self._sanitize_detail(self.detail)
+        return {"status": self.status, "detail": detail}
+
+    def _sanitize_detail(self, detail: str) -> str:
+        """Strip internal details like latency, job IDs, and queue depth from detail."""
+        # For database checks, simplify latency info
+        if "latency:" in detail.lower():
+            if self.status == "pass":
+                return "Connected"
+            return "Connection issue"
+
+        # For queue checks, strip internal metrics
+        if "queue_depth=" in detail or "current_job_id=" in detail:
+            if self.status == "pass":
+                return "ok"
+            if self.status == "warn":
+                return "queue backlog"
+            return "queue issue"
+
+        # For error details, keep generic status
+        if "error:" in detail.lower() or "error " in detail.lower():
+            if self.status == "fail":
+                return "Check failed"
+            return detail
+
+        return detail
 
 
 async def _check_database(engine) -> CheckResult:
@@ -216,6 +253,19 @@ async def _check_github_app(github_auth) -> CheckResult:
         )
 
 
+def _is_internal_request(token_header: str | None) -> bool:
+    """Check if the request has a valid internal token.
+
+    Returns True only if a non-empty internal token is configured
+    and the provided header matches it.
+    """
+    if not _INTERNAL_TOKEN:
+        return False
+    if not token_header:
+        return False
+    return token_header == _INTERNAL_TOKEN
+
+
 @router.get("/healthz")
 async def healthz() -> dict:
     """Kubernetes-style liveness probe. Always returns 200.
@@ -262,15 +312,24 @@ async def readyz(request: Request, response: Response) -> dict:
 
 
 @router.get("/health")
-async def health(request: Request, response: Response) -> dict:
+async def health(
+    request: Request,
+    response: Response,
+    x_internal_token: str | None = Header(default=None),
+) -> dict:
     """Full health check returning status of all subsystems.
 
     Returns 200 if all critical checks pass/warn, 503 if any critical
     check (database, worker) fails.
 
+    Internal details (duration_ms, job IDs, queue depth) are only
+    exposed when X-Internal-Token header matches configured value.
+
     Returns:
         Health status with version, uptime, and all check results.
     """
+    internal = _is_internal_request(x_internal_token)
+
     db_check, queue_check, rate_limit_check, app_check = await asyncio.gather(
         _check_database(request.app.state.db_engine),
         _check_queue(request.app.state.job_queue),
@@ -281,10 +340,10 @@ async def health(request: Request, response: Response) -> dict:
     )
 
     checks = {
-        "database": db_check.to_dict(),
-        "queue": queue_check.to_dict(),
-        "github_rate_limit": rate_limit_check.to_dict(),
-        "github_app": app_check.to_dict(),
+        "database": db_check.to_dict(internal=internal),
+        "queue": queue_check.to_dict(internal=internal),
+        "github_rate_limit": rate_limit_check.to_dict(internal=internal),
+        "github_app": app_check.to_dict(internal=internal),
     }
 
     # Critical checks: database and queue (which includes worker status)
