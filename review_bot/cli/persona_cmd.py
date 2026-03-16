@@ -506,11 +506,8 @@ def persona_mine(name: str, github_user: str | None, full: bool) -> None:
             click.echo(
                 click.style("Re-analyzing review patterns...", fg="cyan")
             )
-            # Weight only the new reviews for the incremental arg
-            new_deduped = collapse_threads(list(new_reviews), github_user)
-            new_weighted = apply_weights(new_deduped)
             profile = await analyzer.analyze_incremental(
-                existing, new_weighted, weighted,
+                existing, weighted,
             )
         else:
             click.echo(

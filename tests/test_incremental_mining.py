@@ -421,7 +421,7 @@ class TestIncrementalPreservesOverrides:
         mock_profile = _make_profile(overrides=[])
         with patch.object(analyzer, "analyze", new_callable=AsyncMock) as mock_analyze:
             mock_analyze.return_value = mock_profile
-            result = await analyzer.analyze_incremental(existing, reviews, reviews)
+            result = await analyzer.analyze_incremental(existing, reviews)
 
         assert result.overrides == ["Always check type hints", "Prefer dataclasses"]
 
@@ -589,7 +589,7 @@ class TestMinedFromCount:
         with patch.object(analyzer, "analyze", new_callable=AsyncMock) as mock_analyze:
             mock_analyze.return_value = mock_profile
             result = await analyzer.analyze_incremental(
-                existing, all_reviews[:1], all_reviews,
+                existing, all_reviews,
             )
 
         assert "3 comments" in result.mined_from
