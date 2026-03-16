@@ -16,6 +16,10 @@ from review_bot.config.paths import CONFIG_DIR, DB_PATH
 logger = logging.getLogger("review-bot")
 
 
+class ConfigurationError(Exception):
+    """Raised when required configuration is missing or invalid."""
+
+
 class MinSeverity(IntEnum):
     """Severity threshold levels for filtering review findings.
 
@@ -115,6 +119,10 @@ class Settings(BaseSettings):
 
         Returns:
             List of validation error messages. Empty list means valid.
+
+        Raises:
+            ConfigurationError: If webhook_secret is empty/None or if
+                private key permissions are insecure.
         """
         errors: list[str] = []
 
@@ -125,7 +133,7 @@ class Settings(BaseSettings):
             )
 
         if not self.webhook_secret:
-            errors.append(
+            raise ConfigurationError(
                 "webhook_secret must be non-empty. "
                 "Set REVIEW_BOT_WEBHOOK_SECRET or configure via 'review-bot init'."
             )
@@ -142,20 +150,23 @@ class Settings(BaseSettings):
             )
         else:
             # Check file permissions (should be 0600 for security)
-            self._check_private_key_permissions(errors)
+            self._check_private_key_permissions()
 
         # Check GITHUB_TOKEN scopes if available
         self._check_github_token_scopes()
 
         return errors
 
-    def _check_private_key_permissions(self, errors: list[str]) -> None:
-        """Warn if private key file has overly permissive permissions."""
+    def _check_private_key_permissions(self) -> None:
+        """Raise ConfigurationError if private key file has overly permissive permissions.
+
+        In server mode, insecure permissions are a hard error.
+        """
         try:
             file_stat = self.private_key_path.stat()
             mode = stat.S_IMODE(file_stat.st_mode)
             if mode & (stat.S_IRWXG | stat.S_IRWXO):
-                errors.append(
+                raise ConfigurationError(
                     f"private_key_path has insecure permissions: {oct(mode)}. "
                     f"Run: chmod 600 {self.private_key_path}"
                 )

@@ -11,6 +11,19 @@ logger = logging.getLogger("review-bot")
 
 GITHUB_API_BASE = "https://api.github.com"
 
+_TOKEN_CACHE_MAX_ENTRIES = 1000
+
+
+def mask_token(token: str) -> str:
+    """Mask a token for safe logging, showing only the last 4 characters.
+
+    Returns:
+        Token masked as '****<last4chars>'.
+    """
+    if not token:
+        return "****"
+    return f"****{token[-4:]}"
+
 
 class GitHubAppAuth:
     """GitHub App authentication: JWT generation and installation token caching.
@@ -23,6 +36,22 @@ class GitHubAppAuth:
         self._app_id = app_id
         self._private_key = Path(private_key_path).read_text()
         self._token_cache: dict[int, tuple[str, float]] = {}
+
+    def _evict_oldest_cache_entry(self) -> None:
+        """Remove the oldest cache entry (by expiry time) when cache is full."""
+        if len(self._token_cache) >= _TOKEN_CACHE_MAX_ENTRIES:
+            oldest_id = min(self._token_cache, key=lambda k: self._token_cache[k][1])
+            del self._token_cache[oldest_id]
+            logger.debug("Evicted oldest token cache entry for installation %d", oldest_id)
+
+    def invalidate(self, installation_id: int) -> None:
+        """Explicitly clear the cached token for an installation.
+
+        Args:
+            installation_id: The installation whose cached token to remove.
+        """
+        self._token_cache.pop(installation_id, None)
+        logger.debug("Invalidated cached token for installation %d", installation_id)
 
     def get_jwt(self) -> str:
         """Generate a JWT for GitHub App authentication.
@@ -41,6 +70,7 @@ class GitHubAppAuth:
         """Get an installation access token, using cache when possible.
 
         Tokens are cached and refreshed 5 minutes before expiry.
+        On failure, any stale cache entry for this installation is deleted.
         """
         cached = self._token_cache.get(installation_id)
         if cached:
@@ -49,24 +79,37 @@ class GitHubAppAuth:
                 return token
 
         token_jwt = self.get_jwt()
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens",
-                headers={
-                    "Authorization": f"Bearer {token_jwt}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens",
+                    headers={
+                        "Authorization": f"Bearer {token_jwt}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception:
+            # Clear stale cache entry before re-raising
+            self._token_cache.pop(installation_id, None)
+            raise
 
         token = data["token"]
         # GitHub tokens expire in 1 hour; cache with that assumption
         expires_at = time.time() + 3600
+
+        # Evict oldest entry if cache is full before adding new one
+        if installation_id not in self._token_cache:
+            self._evict_oldest_cache_entry()
         self._token_cache[installation_id] = (token, expires_at)
 
-        logger.debug("Refreshed installation token for installation %d", installation_id)
+        logger.debug(
+            "Refreshed installation token for installation %d (%s)",
+            installation_id,
+            mask_token(token),
+        )
         return token
 
     async def create_token_client(self, installation_id: int) -> httpx.AsyncClient:
@@ -75,6 +118,11 @@ class GitHubAppAuth:
         The client includes Authorization and Accept headers for GitHub API v3.
         """
         token = await self.get_installation_token(installation_id)
+        logger.debug(
+            "Creating authenticated client for installation %d (%s)",
+            installation_id,
+            mask_token(token),
+        )
         return httpx.AsyncClient(
             headers={
                 "Authorization": f"token {token}",
