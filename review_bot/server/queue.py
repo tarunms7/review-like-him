@@ -282,7 +282,10 @@ class AsyncJobQueue:
         if self._worker_task is not None:
             drained = await self.drain()
             if not drained:
-                logger.warning("Drain timed out after %.1fs, cancelling worker", self._drain_timeout)
+                logger.warning(
+                    "Drain timed out after %.1fs, cancelling worker",
+                    self._drain_timeout,
+                )
             self._worker_task.cancel()
             try:
                 await self._worker_task
