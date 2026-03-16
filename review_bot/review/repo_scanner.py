@@ -381,7 +381,7 @@ class RepoScanner:
         except httpx.HTTPStatusError:
             logger.debug("HTTP error reading file %s in %s/%s", path, owner, repo)
             return None
-        except (UnicodeDecodeError, KeyError, TypeError, ValueError) as exc:
+        except (UnicodeDecodeError, KeyError, TypeError, ValueError):
             logger.warning(
                 "Unexpected error reading file %s in %s/%s",
                 path, owner, repo, exc_info=True,
@@ -1011,7 +1011,7 @@ class RepoScanner:
 
         try:
             return RepoConfig.from_yaml(content)
-        except (yaml.YAMLError, ValidationError, ValueError) as exc:
+        except (yaml.YAMLError, ValidationError, ValueError):
             logger.warning(
                 "Failed to parse .review-like-him.yml in %s/%s, using defaults",
                 owner, repo, exc_info=True,
