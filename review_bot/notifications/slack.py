@@ -67,7 +67,7 @@ class SlackNotifier:
             else:
                 logger.error("Slack API error: %s", error)
             return False
-        except Exception:
+        except httpx.HTTPError:
             logger.exception("Failed to send Slack notification")
             return False
 

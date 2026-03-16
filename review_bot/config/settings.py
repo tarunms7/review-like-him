@@ -74,7 +74,21 @@ class Settings(BaseSettings):
         le=20,
         description="Maximum number of personas that can review a single PR",
     )
-
+    slack_webhook_url: str | None = Field(
+        default=None, description="Slack webhook URL for notifications"
+    )
+    slack_bot_token: str | None = Field(
+        default=None, description="Slack bot token (xoxb-...) for notifications"
+    )
+    slack_channel: str | None = Field(
+        default=None, description="Slack channel for notifications (e.g. #reviews)"
+    )
+    discord_webhook_url: str | None = Field(
+        default=None, description="Discord webhook URL for notifications"
+    )
+    notifications_enabled: bool = Field(
+        default=False, description="Enable notification dispatch after reviews"
+    )
 
     @field_validator("min_severity")
     @classmethod
