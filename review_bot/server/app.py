@@ -13,9 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from review_bot.config.paths import ensure_directories
 from review_bot.config.settings import Settings
+from review_bot.dashboard.router import router as dashboard_router
 from review_bot.github.app import GitHubAppAuth
 from review_bot.persona.store import PersonaStore
-from review_bot.dashboard.router import router as dashboard_router
 from review_bot.server.health import router as health_router
 from review_bot.server.health import set_start_time
 from review_bot.server.queue import AsyncJobQueue
