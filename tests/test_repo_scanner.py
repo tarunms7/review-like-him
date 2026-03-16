@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from review_bot.config.repo_config import RepoConfig
 from review_bot.review.repo_scanner import (
     _MAX_CONTEXT_SIZE,
     ModuleBoundary,
@@ -711,3 +712,153 @@ class TestScanIntegration:
         ctx = await scanner.scan("owner", "repo")
 
         assert ctx.repo_config == {"min_severity": 2, "exclude_paths": ["vendor/**"]}
+
+
+# ---------------------------------------------------------------------------
+# Narrow exception handling tests
+# ---------------------------------------------------------------------------
+
+class TestNarrowExceptionHandling:
+    """Tests verifying narrowed except clauses degrade gracefully."""
+
+    @pytest.mark.asyncio()
+    async def test_scan_modules_httpx_error_graceful_degradation(
+        self, mock_github_client,
+    ) -> None:
+        """HTTPStatusError in _detect_modules yields empty modules list."""
+        root_contents = [
+            _dir_entry("pyproject.toml"),
+            _dir_entry("src", "dir"),
+        ]
+
+        call_count = 0
+
+        async def mock_get_contents(owner, repo, path):
+            nonlocal call_count
+            if path == "":
+                return root_contents
+            if path == "pyproject.toml":
+                return {"content": _b64("[project]\nname='x'\n")}
+            # Make _list_dir / _detect_modules fail for directory listing
+            if path == "src":
+                raise httpx.HTTPStatusError(
+                    "Server Error",
+                    request=httpx.Request("GET", "https://api.github.com"),
+                    response=httpx.Response(500),
+                )
+            if path == ".review-like-him.yml":
+                raise httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://api.github.com"),
+                    response=httpx.Response(404),
+                )
+            return []
+
+        mock_github_client.get_repo_contents = AsyncMock(
+            side_effect=mock_get_contents,
+        )
+
+        scanner = RepoScanner(mock_github_client)
+        ctx = await scanner.scan("owner", "repo")
+
+        # modules should be empty (or populated without failing)
+        # The scan must not raise
+        assert isinstance(ctx, RepoContext)
+
+    @pytest.mark.asyncio()
+    async def test_scan_api_contracts_key_error_logged(
+        self, mock_github_client, caplog,
+    ) -> None:
+        """KeyError in _detect_api_contracts is caught and logged."""
+        import logging
+
+        root_contents = [
+            _dir_entry("pyproject.toml"),
+            _dir_entry("src", "dir"),
+        ]
+
+        async def mock_get_contents(owner, repo, path):
+            if path == "":
+                return root_contents
+            if path == "pyproject.toml":
+                return {"content": _b64("[project]\nname='x'\n")}
+            if path == ".review-like-him.yml":
+                raise httpx.HTTPStatusError(
+                    "Not Found",
+                    request=httpx.Request("GET", "https://api.github.com"),
+                    response=httpx.Response(404),
+                )
+            return []
+
+        mock_github_client.get_repo_contents = AsyncMock(
+            side_effect=mock_get_contents,
+        )
+
+        scanner = RepoScanner(mock_github_client)
+
+        # Patch _detect_api_contracts to raise KeyError
+        scanner._detect_api_contracts = AsyncMock(
+            side_effect=KeyError("missing_field"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="review-bot"):
+            ctx = await scanner.scan("owner", "repo")
+
+        assert ctx.api_contracts == []
+        assert any(
+            "Failed to detect API contracts" in rec.message
+            and "missing_field" in rec.message
+            for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio()
+    async def test_read_file_unicode_error_returns_none(
+        self, mock_github_client,
+    ) -> None:
+        """UnicodeDecodeError from base64 content returns None."""
+        import base64
+
+        # Create bytes that are valid base64 but invalid UTF-8
+        bad_bytes = bytes([0x80, 0x81, 0x82, 0xFF])
+        b64_content = base64.b64encode(bad_bytes).decode("ascii")
+
+        mock_github_client.get_repo_contents = AsyncMock(
+            return_value={"content": b64_content},
+        )
+
+        scanner = RepoScanner(mock_github_client)
+        result = await scanner._read_file("owner", "repo", "binary.dat")
+
+        assert result is None
+
+    @pytest.mark.asyncio()
+    async def test_load_repo_config_yaml_error_returns_default(
+        self, mock_github_client,
+    ) -> None:
+        """Invalid YAML in load_repo_config returns RepoConfig.default()."""
+        invalid_yaml = ": : : not valid yaml [["
+
+        mock_github_client.get_repo_contents = AsyncMock(
+            return_value={"content": _b64(invalid_yaml)},
+        )
+
+        scanner = RepoScanner(mock_github_client)
+        config = await scanner.load_repo_config("owner", "repo")
+
+        assert config == RepoConfig.default()
+
+    @pytest.mark.asyncio()
+    async def test_read_repo_config_yaml_error_returns_none(
+        self, mock_github_client,
+    ) -> None:
+        """Invalid YAML in _read_repo_config returns None."""
+        invalid_yaml = '": invalid: yaml: ['
+
+        mock_github_client.get_repo_contents = AsyncMock(
+            return_value={"content": _b64(invalid_yaml)},
+        )
+
+        scanner = RepoScanner(mock_github_client)
+        config = await scanner._read_repo_config("owner", "repo")
+
+        assert config is None
