@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "review-like-him"
 version = "0.1.0"
-description = "AI-powered reviewer bots that mimic real people's code review style"
+description = "Clone any code reviewer into an AI bot that reviews PRs in their exact style"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
