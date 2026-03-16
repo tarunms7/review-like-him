@@ -90,30 +90,36 @@ class PersonaAnalyzer:
 
         # Call Claude Agent SDK
         result_text = ""
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(max_turns=1),
-        ):
-            if isinstance(message, ResultMessage):
-                if message.result:
-                    result_text = message.result
-                if message.is_error:
-                    raise RuntimeError(
-                        f"Claude returned an error (stop_reason={message.stop_reason})"
-                    )
-            elif isinstance(message, AssistantMessage):
-                if message.error:
-                    raise RuntimeError(f"Claude error: {message.error}")
-                for block in message.content:
-                    if hasattr(block, "text"):
-                        result_text += block.text
+        try:
+            async for message in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(max_turns=1),
+            ):
+                if isinstance(message, ResultMessage):
+                    if message.result:
+                        result_text = message.result
+                    if message.is_error:
+                        raise RuntimeError(
+                            f"Claude returned an error (stop_reason={message.stop_reason})"
+                        )
+                elif isinstance(message, AssistantMessage):
+                    if message.error:
+                        raise RuntimeError(f"Claude error: {message.error}")
+                    for block in message.content:
+                        if hasattr(block, "text"):
+                            result_text += block.text
+        except (OSError, ConnectionError, TimeoutError) as exc:
+            raise RuntimeError(f"Network error communicating with Claude: {exc}") from exc
 
         # Parse the JSON response
         parsed = self._parse_llm_response(result_text)
 
         # Build the mining summary
         repos = {r.get("repo", "") for r in weighted_reviews if r.get("repo")}
-        mined_from = f"{len(weighted_reviews)} comments across {len(repos)} repos"
+        if repos:
+            mined_from = f"{len(weighted_reviews)} comments across {len(repos)} repos"
+        else:
+            mined_from = f"{len(weighted_reviews)} comments across no repositories"
 
         return PersonaProfile(
             name=persona_name,
@@ -158,9 +164,14 @@ class PersonaAnalyzer:
         profile.smoothed_category_rates = existing_profile.smoothed_category_rates
         profile.last_mined_at = datetime.now(UTC).isoformat()
         repos = {r.get("repo", "") for r in all_weighted_reviews if r.get("repo")}
-        profile.mined_from = (
-            f"{len(all_weighted_reviews)} comments across {len(repos)} repos"
-        )
+        if repos:
+            profile.mined_from = (
+                f"{len(all_weighted_reviews)} comments across {len(repos)} repos"
+            )
+        else:
+            profile.mined_from = (
+                f"{len(all_weighted_reviews)} comments across no repositories"
+            )
         return profile
 
     async def reanalyze_with_feedback(
@@ -265,6 +276,15 @@ class PersonaAnalyzer:
                     priority.category, priority.severity, new_severity, smoothed,
                 )
 
+            # Validate severity is in the valid set
+            valid_severities = {"critical", "strict", "moderate", "opinionated"}
+            if new_severity not in valid_severities:
+                logger.warning(
+                    "Invalid severity '%s' for %s after adjustment, keeping original '%s'",
+                    new_severity, priority.category, priority.severity,
+                )
+                new_severity = priority.severity
+
             # Persist the smoothed rate for next run
             profile.smoothed_category_rates[priority.category] = smoothed
 
@@ -291,12 +311,24 @@ class PersonaAnalyzer:
             lines = lines[1:]
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
-            text = "\n".join(lines)
+            stripped = "\n".join(lines).strip()
+            # Only use stripped text if it looks like valid JSON
+            if stripped and stripped[0] in ("{", "["):
+                text = stripped
+            else:
+                logger.warning(
+                    "Stripped markdown fences but remaining text doesn't look like JSON, "
+                    "attempting parse anyway: %s",
+                    stripped[:200],
+                )
+                text = stripped
 
         try:
             return json.loads(text)
-        except json.JSONDecodeError:
-            logger.error("Failed to parse LLM response as JSON: %s", text[:200])
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "Failed to parse LLM response as JSON: %s (error: %s)", text[:200], exc
+            )
             return {}
 
 

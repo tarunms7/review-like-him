@@ -21,10 +21,17 @@ def _detect_webhook_url() -> str | None:
 
         resp = httpx.get("http://127.0.0.1:4040/api/tunnels", timeout=2)
         if resp.status_code == 200:
-            tunnels = resp.json().get("tunnels", [])
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            tunnels = data.get("tunnels")
+            if not isinstance(tunnels, list):
+                return None
             for t in tunnels:
+                if not isinstance(t, dict):
+                    continue
                 public_url = t.get("public_url", "")
-                if public_url.startswith("https://"):
+                if isinstance(public_url, str) and public_url.startswith("https://"):
                     return public_url
     except Exception:
         pass

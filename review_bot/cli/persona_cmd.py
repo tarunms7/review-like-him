@@ -172,10 +172,13 @@ async def _run_mining(
         }
         if since is not None:
             kwargs["since"] = since
-        try:
+        import inspect
+
+        sig = inspect.signature(miner.mine_user_reviews)
+        if "since" in sig.parameters:
             reviews = await miner.mine_user_reviews(github_user, **kwargs)
-        except TypeError:
-            # Miner may not support 'since' yet — fall back to full mine
+        else:
+            # Miner does not support 'since' — fall back to full mine
             reviews = await miner.mine_user_reviews(
                 github_user,
                 progress_callback=progress_handler,
@@ -591,7 +594,20 @@ def persona_edit(name: str) -> None:
 
     personas_dir = Path.home() / ".review-bot" / "personas"
     filepath = personas_dir / f"{name}.yaml"
+    import shutil
+
     editor = os.environ.get("EDITOR", "vi")
+
+    # Validate the editor is a known command or valid executable path
+    if not shutil.which(editor):
+        click.echo(
+            click.style(
+                f"Editor '{editor}' not found in PATH. "
+                "Set $EDITOR to a valid editor (e.g. vim, nano, code).",
+                fg="red",
+            )
+        )
+        raise SystemExit(1)
 
     click.echo(f"Opening {filepath} in {editor}...")
 

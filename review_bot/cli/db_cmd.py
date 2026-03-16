@@ -41,6 +41,14 @@ def migrate_db(source: str, target: str, dry_run: bool) -> None:
         target: PostgreSQL database connection URL.
         dry_run: If True, only export and display counts without importing.
     """
+    # Warn about database URLs being visible in process listing
+    click.echo(
+        click.style(
+            "⚠  Database URLs passed as CLI args are visible in process listings (ps). "
+            "Consider using environment variables (REVIEW_BOT_DB_URL) for sensitive URLs.",
+            fg="yellow",
+        )
+    )
     asyncio.run(_run_migration(source, target, dry_run))
 
 
@@ -123,7 +131,25 @@ async def _run_migration(source: str, target: str, dry_run: bool) -> None:
             await init_database(target_engine, "postgresql")
 
             click.echo("Importing data to PostgreSQL...")
-            counts = await import_to_postgresql(target_engine, data)
+            try:
+                counts = await import_to_postgresql(target_engine, data)
+            except Exception as import_exc:
+                click.echo(
+                    click.style(
+                        f"\nImport failed: {import_exc}",
+                        fg="red",
+                    ),
+                    err=True,
+                )
+                click.echo(
+                    click.style(
+                        "The target database may be in a partially imported state. "
+                        "Consider dropping and re-creating the target schema before retrying.",
+                        fg="yellow",
+                    ),
+                    err=True,
+                )
+                sys.exit(1)
 
             click.echo("\nImport summary:")
             total_imported = 0

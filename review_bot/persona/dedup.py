@@ -58,6 +58,10 @@ def _find_thread_root(
 
     if comment_id in visited:
         # Cycle detected — treat current as root
+        logger.warning(
+            "Cycle detected in reply chain at comment_id=%d, treating as root",
+            comment_id,
+        )
         return comment_id
 
     visited.add(comment_id)

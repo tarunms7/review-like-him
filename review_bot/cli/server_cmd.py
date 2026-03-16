@@ -119,8 +119,19 @@ def _start_daemon(host: str, port: int) -> None:
         click.style(f"Starting review-bot daemon on {host}:{port}...", fg="cyan")
     )
 
-    # Write stdout/stderr to log file
+    # Write stdout/stderr to log file with size rotation
     log_file = LOG_DIR / "server.log"
+    max_log_size = 10 * 1024 * 1024  # 10 MB
+
+    # Rotate log if it exceeds the size limit
+    if log_file.exists() and log_file.stat().st_size > max_log_size:
+        rotated = LOG_DIR / "server.log.1"
+        try:
+            if rotated.exists():
+                rotated.unlink()
+            log_file.rename(rotated)
+        except OSError:
+            pass  # Best-effort rotation
 
     log_fd = None
     try:
@@ -212,13 +223,17 @@ def server_status() -> None:
     if pid is not None:
         running = True
     else:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(1)
-                result = sock.connect_ex(("127.0.0.1", settings.port))
-                running = result == 0
-        except OSError:
-            running = False
+        # Check both localhost and 0.0.0.0 (server may bind to either)
+        for check_host in ("127.0.0.1", "0.0.0.0"):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(1)
+                    result = sock.connect_ex((check_host, settings.port))
+                    if result == 0:
+                        running = True
+                        break
+            except OSError:
+                continue
 
     click.echo(click.style("\n═══ review-bot Status ═══\n", fg="cyan", bold=True))
 

@@ -8,14 +8,22 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+import re
+
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Regex pattern for validating GitHub API repository URLs
+_GITHUB_REPO_URL_RE = re.compile(
+    r"^https://api\.github\.com/repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+)
 
 # GitHub API constants
 GITHUB_API = "https://api.github.com"
 PER_PAGE = 100
 RATE_LIMIT_BUFFER = 5  # seconds buffer when sleeping for rate limits
+MAX_RATE_LIMIT_SLEEP = 300  # maximum seconds to sleep for rate limit backoff
 
 
 @dataclasses.dataclass
@@ -66,7 +74,11 @@ class GitHubReviewMiner:
             # Handle 429 rate limit responses with exponential backoff
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after else backoff
+                try:
+                    wait = float(retry_after) if retry_after else backoff
+                except (ValueError, TypeError):
+                    wait = backoff
+                wait = min(wait, MAX_RATE_LIMIT_SLEEP)
                 logger.warning(
                     "Rate limited (429) on attempt %d/%d, retrying in %.1fs",
                     attempt + 1,
@@ -74,18 +86,32 @@ class GitHubReviewMiner:
                     wait,
                 )
                 await asyncio.sleep(wait)
-                backoff *= 2
+                backoff = min(backoff * 2, MAX_RATE_LIMIT_SLEEP)
                 continue
 
             # Respect approaching rate limits
             remaining = response.headers.get("X-RateLimit-Remaining")
-            if remaining is not None and int(remaining) <= 1:
-                reset_at = int(response.headers.get("X-RateLimit-Reset", "0"))
-                import time
+            if remaining is not None:
+                try:
+                    remaining_int = int(remaining)
+                except (ValueError, TypeError):
+                    remaining_int = None
+                    logger.warning(
+                        "Non-numeric X-RateLimit-Remaining header: %s", remaining
+                    )
+                if remaining_int is not None and remaining_int <= 1:
+                    try:
+                        reset_at = int(response.headers.get("X-RateLimit-Reset", "0"))
+                    except (ValueError, TypeError):
+                        reset_at = 0
+                    import time
 
-                sleep_seconds = max(reset_at - int(time.time()) + RATE_LIMIT_BUFFER, 1)
-                logger.warning("Rate limit near exhaustion, sleeping %d seconds", sleep_seconds)
-                await asyncio.sleep(sleep_seconds)
+                    sleep_seconds = min(
+                        max(reset_at - int(time.time()) + RATE_LIMIT_BUFFER, 1),
+                        MAX_RATE_LIMIT_SLEEP,
+                    )
+                    logger.warning("Rate limit near exhaustion, sleeping %d seconds", sleep_seconds)
+                    await asyncio.sleep(sleep_seconds)
 
             try:
                 from review_bot.github.rate_limits import RateLimitTracker
@@ -190,6 +216,11 @@ class GitHubReviewMiner:
                 repo_url = item.get("repository_url", "")
                 pr_number = item.get("number")
                 if repo_url and pr_number:
+                    if not _GITHUB_REPO_URL_RE.match(repo_url):
+                        logger.warning(
+                            "Skipping unexpected repository URL format: %s", repo_url
+                        )
+                        continue
                     parts = repo_url.rstrip("/").split("/")
                     if len(parts) >= 2:
                         full_name = f"{parts[-2]}/{parts[-1]}"
@@ -255,6 +286,9 @@ class GitHubReviewMiner:
             for comment in comments:
                 user = comment.get("user", {})
                 if user and user.get("login", "").lower() == username.lower():
+                    line = comment.get("original_line") or comment.get("line")
+                    if line is None:
+                        line = 0
                     results.append({
                         "repo": repo_full_name,
                         "pr_number": pr_number,
@@ -262,7 +296,7 @@ class GitHubReviewMiner:
                         "verdict": None,
                         "created_at": comment.get("created_at", ""),
                         "file_path": comment.get("path", ""),
-                        "line": comment.get("original_line") or comment.get("line"),
+                        "line": line,
                     })
 
             # Fetch review verdicts (APPROVE, REQUEST_CHANGES, etc.)

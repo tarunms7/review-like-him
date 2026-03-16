@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import copy
+import logging
 from datetime import UTC, datetime
+
+logger = logging.getLogger(__name__)
 
 
 def weight_comment(comment_date: datetime) -> float:
@@ -34,9 +37,26 @@ def apply_weights(comments: list[dict]) -> list[dict]:
     weighted: list[dict] = []
     for comment in comments:
         entry = copy.deepcopy(comment)
-        created_at = entry["created_at"]
+        created_at = entry.get("created_at")
+        if created_at is None:
+            logger.warning(
+                "Comment missing 'created_at', assigning weight 0.0: %s",
+                str(entry.get("comment_body", ""))[:80],
+            )
+            entry["weight"] = 0.0
+            weighted.append(entry)
+            continue
         if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at)
+            try:
+                created_at = datetime.fromisoformat(created_at)
+            except ValueError:
+                logger.warning(
+                    "Unparseable 'created_at' value '%s', assigning weight 0.0",
+                    created_at,
+                )
+                entry["weight"] = 0.0
+                weighted.append(entry)
+                continue
         temporal_w = weight_comment(created_at)
         dedup_w = entry.get("dedup_weight", 1.0)
         entry["weight"] = temporal_w * dedup_w

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 import click
 import httpx
 
 from review_bot.persona.store import PersonaStore
+
+logger = logging.getLogger(__name__)
+
+# Database connection retry settings
+_DB_CONNECT_MAX_RETRIES = 3
+_DB_CONNECT_RETRY_DELAY = 1.0
 
 
 def _run_async(coro):
@@ -77,8 +84,34 @@ def review_cmd(pr_url: str, persona_name: str) -> None:
                 )
             )
 
-        # Create database engine for logging reviews
-        engine = create_async_engine(settings.db_url, echo=False)
+        # Create database engine for logging reviews with retry logic
+        engine = None
+        for _attempt in range(_DB_CONNECT_MAX_RETRIES):
+            try:
+                engine = create_async_engine(settings.db_url, echo=False)
+                # Test connection
+                async with engine.connect() as conn:
+                    await conn.execute(
+                        __import__("sqlalchemy").text("SELECT 1")
+                    )
+                break
+            except Exception as db_exc:
+                if _attempt < _DB_CONNECT_MAX_RETRIES - 1:
+                    logger.warning(
+                        "Database connection attempt %d/%d failed: %s, retrying...",
+                        _attempt + 1,
+                        _DB_CONNECT_MAX_RETRIES,
+                        db_exc,
+                    )
+                    await asyncio.sleep(_DB_CONNECT_RETRY_DELAY)
+                    if engine is not None:
+                        await engine.dispose()
+                        engine = None
+                else:
+                    raise RuntimeError(
+                        f"Failed to connect to database after "
+                        f"{_DB_CONNECT_MAX_RETRIES} attempts: {db_exc}"
+                    ) from db_exc
 
         try:
             # Initialize database tables
@@ -134,7 +167,8 @@ def _display_result(result) -> None:
         for section in result.summary_sections:
             click.echo(f"\n  {section.emoji} {click.style(section.title, bold=True)}")
             for finding in section.findings:
-                click.echo(f"    • {finding}")
+                text = finding.text if hasattr(finding, "text") else str(finding)
+                click.echo(f"    • {text}")
 
     if result.inline_comments:
         click.echo(click.style(f"\n  Inline Comments ({len(result.inline_comments)}):", bold=True))

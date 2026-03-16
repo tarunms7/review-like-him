@@ -7,19 +7,22 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-STATUS_URL = "http://localhost:8787/status"
+from review_bot.config.settings import Settings
 
 
 @click.command()
 def status_cmd() -> None:
     """Show current GitHub API rate limit state from the running server."""
+    settings = Settings()
+    status_url = f"http://localhost:{settings.port}/status"
+
     try:
-        response = httpx.get(STATUS_URL, timeout=5.0)
+        response = httpx.get(status_url, timeout=5.0)
         response.raise_for_status()
     except httpx.ConnectError:
         click.echo(
             click.style(
-                "Could not connect to review-bot server at localhost:8787. "
+                f"Could not connect to review-bot server at localhost:{settings.port}. "
                 "Is it running?",
                 fg="red",
             )
@@ -38,7 +41,7 @@ def status_cmd() -> None:
     if status == "degraded":
         reason = data.get("reason", "Unknown reason")
         click.echo(click.style(f"Server status: degraded — {reason}", fg="yellow"))
-        return
+        # Continue to show available data instead of returning early
 
     rate_limits: dict = data.get("rate_limits", {})
 

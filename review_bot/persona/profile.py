@@ -69,9 +69,14 @@ class PersonaProfile(BaseModel):
     )
 
     def to_yaml(self) -> str:
-        """Serialize the profile to a YAML string."""
+        """Serialize the profile to a YAML string.
+
+        Filters out None values to avoid 'null' entries in YAML output.
+        """
+        data = self.model_dump()
+        data = _filter_none_values(data)
         return yaml.dump(
-            self.model_dump(),
+            data,
             default_flow_style=False,
             sort_keys=False,
             allow_unicode=True,
@@ -82,3 +87,12 @@ class PersonaProfile(BaseModel):
         """Deserialize a profile from a YAML string."""
         data = yaml.safe_load(yaml_str)
         return cls.model_validate(data)
+
+
+def _filter_none_values(obj: dict | list | object) -> dict | list | object:
+    """Recursively filter None values from dicts and lists."""
+    if isinstance(obj, dict):
+        return {k: _filter_none_values(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_filter_none_values(item) for item in obj]
+    return obj

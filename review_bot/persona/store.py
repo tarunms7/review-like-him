@@ -38,12 +38,19 @@ class PersonaStore:
 
         Raises:
             FileNotFoundError: If the persona file does not exist.
+            ValueError: If the persona file contains corrupted/invalid YAML.
         """
+        import yaml as _yaml
+
         path = self._path_for(name)
         if not path.exists():
             raise FileNotFoundError(f"Persona '{name}' not found at {path}")
         yaml_str = path.read_text(encoding="utf-8")
-        return PersonaProfile.from_yaml(yaml_str)
+        try:
+            return PersonaProfile.from_yaml(yaml_str)
+        except _yaml.YAMLError as exc:
+            logger.error("Corrupted YAML in persona '%s' at %s: %s", name, path, exc)
+            raise ValueError(f"Corrupted persona file '{name}' at {path}: {exc}") from exc
 
     def list_all(self) -> list[PersonaProfile]:
         """Load and return all persona profiles from the store."""
@@ -103,17 +110,19 @@ class PersonaStore:
             name: Persona name slug.
 
         Returns:
-            List of review comment dicts, or [] if file not found or corrupt.
+            List of review comment dicts, or [] if file not found or corrupted.
         """
         path = self._reviews_path_for(name)
         if not path.exists():
+            logger.debug("Reviews cache not found for '%s' at %s", name, path)
             return []
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
             logger.warning(
-                "Corrupted reviews cache for '%s' at %s, returning empty list",
+                "Corrupted reviews cache for '%s' at %s: %s",
                 name,
                 path,
+                exc,
             )
             return []
