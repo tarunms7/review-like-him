@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from review_bot.github.api import GITHUB_API_BASE, GitHubAPIClient, ReviewComment
+from review_bot.github.api import GitHubAPIClient, ReviewComment
 from review_bot.review.formatter import CONFIDENCE_PREFIXES, ReviewResult
 from review_bot.review.severity import _infer_comment_category
+
+if TYPE_CHECKING:
+    from review_bot.review.feedback import FeedbackStore
+    from review_bot.review.formatter import InlineComment
 
 logger = logging.getLogger("review-bot")
 
@@ -30,7 +35,7 @@ class ReviewPoster:
     def __init__(
         self,
         github_client: GitHubAPIClient,
-        feedback_store: object | None = None,
+        feedback_store: FeedbackStore | None = None,
     ) -> None:
         self._client = github_client
         self._feedback_store = feedback_store
@@ -160,11 +165,7 @@ class ReviewPoster:
             comment_id: The comment ID returned by post_progress_comment.
             message: Updated progress message.
         """
-        await self._client._request(
-            "PATCH",
-            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/comments/{comment_id}",
-            json={"body": message},
-        )
+        await self._client.update_comment(owner, repo, comment_id, message)
 
     async def delete_progress_comment(
         self,
@@ -173,10 +174,7 @@ class ReviewPoster:
         comment_id: int,
     ) -> None:
         """Delete a progress comment (e.g., after final review is posted)."""
-        await self._client._request(
-            "DELETE",
-            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/comments/{comment_id}",
-        )
+        await self._client.delete_comment(owner, repo, comment_id)
 
     async def _track_posted_comments(
         self,
@@ -219,7 +217,7 @@ class ReviewPoster:
             )
 
             # Build a lookup from (path, line) to the original InlineComment
-            inline_by_location: dict[tuple[str, int], object] = {}
+            inline_by_location: dict[tuple[str, int], InlineComment] = {}
             for ic in result.inline_comments:
                 inline_by_location[(ic.file, ic.line)] = ic
 
@@ -285,12 +283,9 @@ class ReviewPoster:
         Returns:
             List of comment dicts from the GitHub API.
         """
-        resp = await self._client._request(
-            "GET",
-            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}"
-            f"/reviews/{review_id}/comments",
+        return await self._client.get_review_comments(
+            owner, repo, pr_number, review_id,
         )
-        return resp.json()
 
     def _format_body(self, result: ReviewResult) -> str:
         """Format the review body from a ReviewResult."""
@@ -332,7 +327,7 @@ class ReviewPoster:
         return "\n".join(lines)
 
     @staticmethod
-    def _format_inline_body(ic: object) -> str:
+    def _format_inline_body(ic: InlineComment) -> str:
         """Format an inline comment body with confidence prefix.
 
         Args:
