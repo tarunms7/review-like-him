@@ -232,10 +232,13 @@ class ReviewPoster:
                 line = api_comment.get("line") or api_comment.get("original_line", 0)
                 comment_body = api_comment.get("body", "")
 
-                # Infer category from the original inline comment body
+                # Infer category from the original inline comment body.
+                # InlineComment.body is always available — no defensive
+                # hasattr check needed with concrete typing.
                 original_ic = inline_by_location.get((path, line))
-                original_body = original_ic.body if original_ic else comment_body
-                category = _infer_comment_category(original_body)
+                category = _infer_comment_category(
+                    original_ic.body if original_ic is not None else comment_body
+                )
 
                 try:
                     await self._feedback_store.track_posted_comment(
