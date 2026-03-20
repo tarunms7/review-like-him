@@ -43,14 +43,30 @@ class TestVerifySignature:
         payload = b'{"action": "opened"}'
         assert _verify_signature(payload, "", "my-secret") is False
 
-    def test_empty_secret_skips_validation(self):
-        """When no secret is configured, validation is skipped (returns True)."""
+    def test_empty_secret_strict_rejects(self):
+        """When strict_hmac=True and no secret, verification fails."""
         payload = b'{"action": "opened"}'
-        assert _verify_signature(payload, "", "") is True
+        assert _verify_signature(payload, "", "", strict_hmac=True) is False
 
-    def test_empty_secret_ignores_any_signature(self):
+    def test_empty_secret_strict_rejects_with_signature(self):
+        """When strict_hmac=True and no secret, even a provided signature is rejected."""
         payload = b'{"action": "opened"}'
-        assert _verify_signature(payload, "sha256=anything", "") is True
+        assert _verify_signature(payload, "sha256=anything", "", strict_hmac=True) is False
+
+    def test_empty_secret_non_strict_skips_validation(self):
+        """When strict_hmac=False and no secret, validation is skipped (returns True)."""
+        payload = b'{"action": "opened"}'
+        assert _verify_signature(payload, "", "", strict_hmac=False) is True
+
+    def test_empty_secret_non_strict_ignores_any_signature(self):
+        """When strict_hmac=False and no secret, any signature is accepted."""
+        payload = b'{"action": "opened"}'
+        assert _verify_signature(payload, "sha256=anything", "", strict_hmac=False) is True
+
+    def test_default_strict_hmac_is_true(self):
+        """Default strict_hmac should be True, rejecting empty secrets."""
+        payload = b'{"action": "opened"}'
+        assert _verify_signature(payload, "", "") is False
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +265,51 @@ class TestWebhookEndpoint:
         )
         assert resp.status_code == 200
         _mock_job_queue.enqueue.assert_not_called()
+
+    def test_strict_hmac_no_secret_returns_401(self, _mock_job_queue, _mock_persona_store):
+        """With strict_hmac=True and empty secret, all webhooks get 401."""
+        app = FastAPI()
+        app.include_router(router)
+        configure(_mock_job_queue, "", _mock_persona_store, strict_hmac=True)
+        client = TestClient(app)
+        data = {"action": "review_requested"}
+        payload = json.dumps(data).encode()
+        resp = client.post(
+            "/webhook",
+            content=payload,
+            headers={
+                "x-github-event": "pull_request",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 401
+
+    def test_non_strict_hmac_no_secret_allows_request(
+        self, _mock_job_queue, _mock_persona_store
+    ):
+        """With strict_hmac=False and empty secret, webhooks are accepted."""
+        app = FastAPI()
+        app.include_router(router)
+        configure(_mock_job_queue, "", _mock_persona_store, strict_hmac=False)
+        client = TestClient(app)
+        data = {
+            "action": "review_requested",
+            "pull_request": {"number": 1},
+            "repository": {"full_name": "owner/repo"},
+            "installation": {"id": 99},
+            "requested_reviewer": {"login": "alice-bot[bot]"},
+        }
+        payload = json.dumps(data).encode()
+        resp = client.post(
+            "/webhook",
+            content=payload,
+            headers={
+                "x-github-event": "pull_request",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
 
     def test_non_pr_comment_ignored(self, webhook_client, _mock_job_queue):
         """Comments on issues (not PRs) should be ignored."""
