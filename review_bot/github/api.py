@@ -214,6 +214,80 @@ class GitHubAPIClient:
         )
         return [e for e in resp.json() if e.get("type") == "PullRequestReviewEvent"]
 
+    async def update_comment(
+        self, owner: str, repo: str, comment_id: int, body: str
+    ) -> dict:
+        """Update an existing issue comment body.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            comment_id: ID of the comment to update.
+            body: New comment body text.
+
+        Returns:
+            Parsed JSON response dict with id, body, user, created_at, updated_at fields.
+        """
+        resp = await self._request(
+            "PATCH",
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+            json={"body": body},
+        )
+        return resp.json()
+
+    async def delete_comment(self, owner: str, repo: str, comment_id: int) -> None:
+        """Delete an existing issue comment.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            comment_id: ID of the comment to delete.
+        """
+        await self._request(
+            "DELETE",
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/comments/{comment_id}",
+        )
+
+    async def get_comment_reactions(
+        self, owner: str, repo: str, comment_id: int
+    ) -> list[dict]:
+        """Get reactions on a pull request review comment.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            comment_id: ID of the pull request review comment.
+
+        Returns:
+            List of reaction dicts with id, user, content, and created_at fields.
+        """
+        resp = await self._request(
+            "GET",
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions",
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        return resp.json()
+
+    async def get_review_comments(
+        self, owner: str, repo: str, pr_number: int, review_id: str
+    ) -> list[dict]:
+        """Get inline comments posted as part of a specific PR review.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            pr_number: Pull request number.
+            review_id: ID of the review (as a string).
+
+        Returns:
+            List of review comment dicts with id, path, line, original_line, and body fields.
+        """
+        resp = await self._request(
+            "GET",
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}/comments",
+        )
+        return resp.json()
+
     async def get_repo_contents(self, owner: str, repo: str, path: str) -> dict:
         """Get file contents from a repository."""
         resp = await self._request(
