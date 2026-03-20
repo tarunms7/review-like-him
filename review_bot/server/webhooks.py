@@ -30,6 +30,7 @@ class WebhookContext:
     webhook_secret: str
     persona_store: PersonaStore
     feedback_store: FeedbackStore | None = None
+    strict_hmac: bool = True
 
 
 _context: WebhookContext | None = None
@@ -49,6 +50,7 @@ def configure(
     webhook_secret: str,
     persona_store: PersonaStore,
     feedback_store: FeedbackStore | None = None,
+    strict_hmac: bool = True,
 ) -> None:
     """Configure the webhook module with runtime dependencies.
 
@@ -59,6 +61,9 @@ def configure(
         webhook_secret: GitHub webhook HMAC secret.
         persona_store: PersonaStore instance for persona lookups.
         feedback_store: Optional FeedbackStore for recording feedback events.
+        strict_hmac: When True (default), reject webhooks if no secret is
+            configured. When False, allow unverified webhooks with a warning
+            (for testing/development only).
     """
     global _context  # noqa: PLW0603
     _context = WebhookContext(
@@ -66,17 +71,35 @@ def configure(
         webhook_secret=webhook_secret,
         persona_store=persona_store,
         feedback_store=feedback_store,
+        strict_hmac=strict_hmac,
     )
 
 
-def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
-    """Verify GitHub HMAC-SHA256 webhook signature."""
+def _verify_signature(
+    payload: bytes, signature: str, secret: str, *, strict_hmac: bool = True
+) -> bool:
+    """Verify GitHub HMAC-SHA256 webhook signature.
+
+    Args:
+        payload: Raw request body bytes.
+        signature: Value of the ``X-Hub-Signature-256`` header.
+        secret: The shared HMAC secret.
+        strict_hmac: When *True* (default) and *secret* is empty, verification
+            fails.  When *False*, an empty secret logs a warning and allows the
+            request (backward-compatible behaviour for testing).
+    """
     if not secret:
+        if strict_hmac:
+            logger.error(
+                "Webhook secret is not configured and strict_hmac is enabled — "
+                "rejecting request. Set REVIEW_BOT_WEBHOOK_SECRET."
+            )
+            return False
         logger.warning(
             "Webhook secret is not configured — HMAC validation is disabled. "
             "Set REVIEW_BOT_WEBHOOK_SECRET for production use."
         )
-        return True  # No secret configured, skip validation
+        return True
     if not signature:
         return False
     expected = "sha256=" + hmac.new(
@@ -132,8 +155,11 @@ async def webhook_handler(
     payload = await request.body()
 
     # HMAC-SHA256 signature validation
-    if ctx.webhook_secret and not _verify_signature(
-        payload, x_hub_signature_256 or "", ctx.webhook_secret
+    if not _verify_signature(
+        payload,
+        x_hub_signature_256 or "",
+        ctx.webhook_secret,
+        strict_hmac=ctx.strict_hmac,
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 

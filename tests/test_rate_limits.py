@@ -36,12 +36,12 @@ needs_tracker = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
-    """Reset the singleton between every test."""
+    """Reset the singleton between every test via the public reset() API."""
     if _has_tracker and RateLimitTracker is not None:
-        RateLimitTracker._instance = None
+        RateLimitTracker.reset()
     yield
     if _has_tracker and RateLimitTracker is not None:
-        RateLimitTracker._instance = None
+        RateLimitTracker.reset()
 
 
 # -------------------------------------------------------------------
@@ -134,9 +134,17 @@ class TestSingleton:
         b = RateLimitTracker()
         assert a is b
 
+    def test_reset_classmethod_clears_instance(self):
+        """reset() destroys the singleton so the next call creates a new one."""
+        first = RateLimitTracker()
+        RateLimitTracker.reset()
+        assert RateLimitTracker._instance is None
+        second = RateLimitTracker()
+        assert first is not second
+
     def test_reset_yields_new_instance(self):
         first = RateLimitTracker()
-        RateLimitTracker._instance = None
+        RateLimitTracker.reset()
         second = RateLimitTracker()
         assert first is not second
 
@@ -153,6 +161,7 @@ class TestInferResource:
     @pytest.mark.parametrize(
         ("url", "expected"),
         [
+            # Search bucket
             (
                 "https://api.github.com/search/issues",
                 "search",
@@ -161,16 +170,40 @@ class TestInferResource:
                 "https://api.github.com/search/code?q=x",
                 "search",
             ),
+            # GraphQL bucket
             (
                 "https://api.github.com/graphql",
                 "graphql",
             ),
+            # Issues sub-bucket (endpoint contains /issues/)
+            (
+                "https://api.github.com/repos/o/r/issues/1/comments",
+                "issues",
+            ),
+            (
+                "https://api.github.com/repos/o/r/issues/1",
+                "issues",
+            ),
+            # Pulls sub-bucket (endpoint contains /pulls/)
+            (
+                "https://api.github.com/repos/o/r/pulls/42/comments",
+                "pulls",
+            ),
+            (
+                "https://api.github.com/repos/o/r/pulls/42",
+                "pulls",
+            ),
+            # Core bucket — list endpoints without a trailing sub-path slash
             (
                 "https://api.github.com/repos/o/r/pulls",
                 "core",
             ),
             (
                 "https://api.github.com/users/octocat",
+                "core",
+            ),
+            (
+                "https://api.github.com/repos/o/r",
                 "core",
             ),
         ],

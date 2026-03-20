@@ -6,8 +6,16 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request, Response
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from review_bot.github.app import GitHubAppAuth
+    from review_bot.github.rate_limits import RateLimitTracker
+    from review_bot.server.queue import AsyncJobQueue
 
 logger = logging.getLogger("review-bot")
 
@@ -56,7 +64,7 @@ class CheckResult:
         return result
 
 
-async def _check_database(engine) -> CheckResult:
+async def _check_database(engine: AsyncEngine) -> CheckResult:
     """Check database connectivity by running SELECT 1 with a 5s timeout.
 
     Args:
@@ -102,7 +110,7 @@ async def _check_database(engine) -> CheckResult:
         )
 
 
-async def _check_queue(job_queue) -> CheckResult:
+async def _check_queue(job_queue: AsyncJobQueue) -> CheckResult:
     """Check job queue status including depth and worker state.
 
     Args:
@@ -141,7 +149,7 @@ async def _check_queue(job_queue) -> CheckResult:
         )
 
 
-async def _check_github_rate_limit(rate_limit_tracker) -> CheckResult:
+async def _check_github_rate_limit(rate_limit_tracker: RateLimitTracker | None) -> CheckResult:
     """Check GitHub API rate limit status from cached tracker data.
 
     Args:
@@ -191,7 +199,7 @@ async def _check_github_rate_limit(rate_limit_tracker) -> CheckResult:
         )
 
 
-async def _check_github_app(github_auth) -> CheckResult:
+async def _check_github_app(github_auth: GitHubAppAuth) -> CheckResult:
     """Check GitHub App authentication status.
 
     Args:

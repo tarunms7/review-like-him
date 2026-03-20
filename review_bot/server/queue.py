@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from review_bot.github.api import GITHUB_API_BASE, GitHubAPIClient
+from review_bot.github.api import GitHubAPIClient
 from review_bot.github.app import GitHubAppAuth
 from review_bot.notifications.base import NotificationDispatcher, NotificationMessage
 from review_bot.persona.store import PersonaStore
@@ -48,10 +48,6 @@ class GitHubProgressCallback:
     """Posts and updates a live progress comment on a GitHub PR.
 
     Implements the ProgressCallback protocol from review_bot.review.orchestrator.
-
-    Uses ``GitHubAPIClient.post_comment`` for initial creation, then falls
-    back to the underlying httpx client for PATCH (update) and DELETE since
-    ``update_comment`` / ``delete_comment`` are not yet on the API client.
     """
 
     def __init__(
@@ -68,28 +64,6 @@ class GitHubProgressCallback:
         self._pr_number = pr_number
         self._persona_name = persona_name
         self._comment_id: int | None = None
-
-    # ------------------------------------------------------------------
-    # Internal helpers for PATCH / DELETE (not yet on GitHubAPIClient)
-    # ------------------------------------------------------------------
-
-    async def _update_comment(self, comment_id: int, body: str) -> dict:
-        """PATCH an existing issue comment via the underlying httpx client."""
-        resp = await self._client._request(
-            "PATCH",
-            f"{GITHUB_API_BASE}/repos/{self._owner}/{self._repo}"
-            f"/issues/comments/{comment_id}",
-            json={"body": body},
-        )
-        return resp.json()
-
-    async def _delete_comment(self, comment_id: int) -> None:
-        """DELETE an issue comment via the underlying httpx client."""
-        await self._client._request(
-            "DELETE",
-            f"{GITHUB_API_BASE}/repos/{self._owner}/{self._repo}"
-            f"/issues/comments/{comment_id}",
-        )
 
     # ------------------------------------------------------------------
     # ProgressCallback protocol
@@ -116,7 +90,7 @@ class GitHubProgressCallback:
                 self._comment_id = resp.get("id")
             else:
                 # PATCH existing comment
-                await self._update_comment(self._comment_id, body)
+                await self._client.update_comment(self._owner, self._repo, self._comment_id, body)
         except Exception:
             logger.warning(
                 "Failed to update progress comment for %s/%s#%d",
@@ -128,7 +102,7 @@ class GitHubProgressCallback:
         if self._comment_id is None:
             return
         try:
-            await self._delete_comment(self._comment_id)
+            await self._client.delete_comment(self._owner, self._repo, self._comment_id)
         except Exception:
             logger.warning(
                 "Failed to delete progress comment %d for %s/%s#%d",

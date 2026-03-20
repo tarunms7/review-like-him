@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from review_bot.config.settings import Settings
+    from review_bot.review.formatter import ReviewResult
 
 from pydantic import BaseModel, Field
 
@@ -75,7 +79,7 @@ class NotificationDispatcher:
 
     @staticmethod
     def build_message_from_result(
-        result: object,
+        result: ReviewResult,
         owner: str,
         repo: str,
         pr_number: int,
@@ -83,7 +87,7 @@ class NotificationDispatcher:
         """Construct a NotificationMessage from a ReviewResult.
 
         Args:
-            result: A ReviewResult instance (imported lazily to avoid circular deps).
+            result: A ReviewResult instance.
             owner: Repository owner.
             repo: Repository name.
             pr_number: Pull request number.
@@ -121,11 +125,11 @@ class NotificationDispatcher:
         )
 
 
-def create_notifiers(settings: object) -> list[NotificationChannel]:
+def create_notifiers(settings: Settings) -> list[NotificationChannel]:
     """Create notifier instances from application settings.
 
     Args:
-        settings: A Settings instance (accepts object to avoid circular import).
+        settings: A Settings instance.
 
     Returns:
         List of configured NotificationChannel instances. Empty if notifications disabled.
