@@ -29,18 +29,35 @@ class RateLimitTracker:
         with cls._init_lock:
             if cls._instance is None:
                 inst = super().__new__(cls)
+                # threading.Lock is safe here: no awaits inside locked sections.
                 inst._lock = threading.Lock()
                 inst._resources: dict[str, ResourceSnapshot] = {}
                 cls._instance = inst
             return cls._instance
 
     @classmethod
-    def infer_resource(cls, url: str) -> str:
-        """Map URL path to resource type."""
+    def reset(cls) -> None:
+        """Destroy the singleton instance (useful for testing)."""
+        with cls._init_lock:
+            cls._instance = None
+
+    @staticmethod
+    def infer_resource(url: str) -> str:
+        """Map URL path to GitHub rate-limit resource bucket.
+
+        GitHub buckets: ``search``, ``graphql``, and ``core`` (everything
+        else).  We further split ``core`` into granular internal names for
+        issues/pulls comment endpoints so callers can observe per-resource
+        pressure without relying on the GitHub ``/rate_limit`` endpoint.
+        """
         if "/search/" in url:
             return "search"
         if "/graphql" in url:
             return "graphql"
+        if "/issues/" in url:
+            return "issues"
+        if "/pulls/" in url:
+            return "pulls"
         return "core"
 
     def update_from_response(
