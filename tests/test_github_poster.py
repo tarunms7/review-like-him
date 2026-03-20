@@ -13,11 +13,10 @@ from review_bot.review.formatter import (
     ReviewResult,
 )
 from review_bot.review.github_poster import (
-    ReviewPoster,
     _CONFIDENCE_LEGEND,
     _VERDICT_TO_EVENT,
+    ReviewPoster,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
